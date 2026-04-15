@@ -1,5 +1,7 @@
 # FlowSync AI
 
+[![CI](https://github.com/Yash55-max/FlowSync-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Yash55-max/FlowSync-AI/actions/workflows/ci.yml)
+
 FlowSync AI is a real-time crowd intelligence platform for large events. It combines live crowd simulation, density-aware routing, queue prediction, and operator-focused dashboards so attendees and staff can make faster, safer movement decisions.
 
 ## Core Capabilities
@@ -97,6 +99,15 @@ npm run build
 cd "d:\FlowSync AI"
 backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --port 8000
 ```
+
+## Continuous Integration
+
+GitHub Actions runs CI on every push and pull request to `main`:
+
+- Backend: dependency install, syntax compile, FastAPI app import check
+- Frontend: clean dependency install and production build
+
+Workflow file: `.github/workflows/ci.yml`
 
 ## License
 
