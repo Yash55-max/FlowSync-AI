@@ -1,0 +1,84 @@
+# FlowSync AI – Product Requirements Document (PRD)
+
+## 1. Product Overview
+
+FlowSync AI is a real-time crowd intelligence system designed to optimize movement, reduce waiting times, and enhance safety in large-scale physical events such as stadiums and concerts.
+
+## 2. Problem Statement
+
+Attendees at large events face:
+
+* Overcrowded entry/exit points
+* Long queues at food/restrooms
+* Lack of real-time guidance
+* Safety risks during congestion or emergencies
+
+## 3. Objectives
+
+* Reduce crowd congestion
+* Minimize waiting times
+* Provide real-time navigation
+* Enable organizers with actionable insights
+
+## 4. Target Users
+
+### Primary Users
+
+* Event attendees
+
+### Secondary Users
+
+* Event organizers
+* Security personnel
+
+## 5. Key Features
+
+### 5.1 Crowd Heatmap
+
+* Real-time visualization of crowd density
+* Color-coded zones (Low, Medium, High congestion)
+
+### 5.2 Smart Routing
+
+* Suggest least crowded path to destination
+* Dynamic rerouting based on live conditions
+
+### 5.3 Queue Prediction
+
+* Estimate waiting times at food stalls/restrooms
+* Suggest alternatives with shorter queues
+
+### 5.4 Alerts System
+
+* Overcrowding alerts
+* Route change suggestions
+* Emergency notifications
+
+### 5.5 Organizer Dashboard
+
+* Live crowd monitoring
+* Predictive congestion alerts
+* Manual intervention tools
+
+## 6. User Flow
+
+1. User opens app
+2. Sees live heatmap
+3. Selects destination (seat/food/restroom)
+4. Receives optimized route
+5. Gets real-time alerts
+
+## 7. Success Metrics
+
+* Reduced average wait time
+* Improved crowd distribution
+* System latency < 2 seconds
+* User engagement rate
+
+## 8. Constraints
+
+* Limited real-world data → use simulated/mock data
+* Time constraint: 4 days
+
+---
+

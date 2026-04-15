@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+
+# Node
+node_modules/
+dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Env files
+.env
+.env.local
+frontend/.env
+frontend/.env.local
+backend/.env
+backend/.env.local
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
