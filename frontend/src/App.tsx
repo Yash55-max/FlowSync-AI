@@ -100,6 +100,14 @@ type ResilienceStatus = {
   last_sync: string;
 };
 
+type DataSourceStatus = {
+  source: 'simulated' | 'live';
+  stale: boolean;
+  live_snapshot_age_seconds: number | null;
+  live_snapshot_ttl_seconds: number;
+  generated_at: string;
+};
+
 type DemoScenario = 'normal' | 'surge-zone-1' | 'food-rush' | 'emergency-mode' | 'optimize-crowd';
 
 type DemoControlResponse = {
@@ -131,6 +139,8 @@ type ToastNotice = {
   severity: 'low' | 'medium' | 'high';
 };
 
+type UiMode = 'dark' | 'light';
+
 type OrganizerSummary = {
   generated_at: string;
   avg_density: number;
@@ -145,6 +155,7 @@ type OrganizerSummary = {
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const PHASE_OPTIONS: Array<{ label: string; value: EventPhase }> = [
   { label: 'Arrival', value: 'arrival' },
   { label: 'In Venue', value: 'in-venue' },
@@ -170,14 +181,80 @@ const DEMO_CONTROLS: Array<{ label: string; action: DemoScenario; tone: 'low' | 
   { label: '✨ Optimize Crowd', action: 'optimize-crowd', tone: 'low' },
 ];
 
+const STADIUM_CENTER = { lat: 23.0917, lng: 72.5977 };
+
+const REAL_ZONE_LABELS: Record<string, string> = {
+  'zone-1': 'Gate A',
+  'zone-2': 'Food Court North',
+  'zone-3': 'West Stand',
+  'zone-4': 'Parking A',
+  'zone-5': 'Gate B',
+  'zone-6': 'Food Court East',
+  'zone-7': 'South Concourse',
+  'zone-8': 'Parking B',
+  'zone-9': 'Gate C',
+  'zone-10': 'Retail Plaza',
+  'zone-11': 'North Ramp',
+  'zone-12': 'East Stand Entry',
+  'zone-13': 'Upper Concourse',
+  'zone-14': 'Transit Bay',
+  'zone-15': 'Gate D',
+  'zone-16': 'Family Block',
+  'zone-17': 'Hospitality Deck',
+  'zone-18': 'Food Court West',
+  'zone-19': 'South Gate Corridor',
+  'zone-20': 'Central Spine',
+  'zone-21': 'Exit A',
+  'zone-22': 'Exit B',
+  'zone-23': 'Medical Bay',
+  'zone-24': 'Security Checkpoint',
+  'zone-25': 'Halftime Hotspot',
+};
+
+const LOCATION_LABELS: Record<string, string> = {
+  'parking-a': 'Parking A',
+  'gate-1': 'Gate A',
+  'gate-2': 'Gate B',
+  'concourse-a': 'North Concourse',
+  'concourse-b': 'Food Court Corridor',
+  'restroom-1': 'Restroom Cluster 1',
+  'seat-block': 'West Stand Seating',
+  'exit-a': 'Exit A',
+};
+
+const zoneDisplayName = (zoneId: string) => `${REAL_ZONE_LABELS[zoneId] ?? zoneId.toUpperCase()} (${zoneId})`;
+
+const markerColorByDensity = (density: number) => {
+  if (density >= 75) return '#ff3b30';
+  if (density >= 45) return '#f59e0b';
+  return '#22c55e';
+};
+
+const zoneToLatLng = (zone: Zone) => ({
+  lat: STADIUM_CENTER.lat + (zone.row - 2) * 0.00045,
+  lng: STADIUM_CENTER.lng + (zone.col - 2) * 0.00058,
+});
+
 // Canvas-based heatmap visualization component
 interface HeatmapCanvasProps {
   zones: Zone[];
   routePathSet: Set<string>;
+  routePath: string[];
   topZones: Zone[];
+  optimizeMode: boolean;
+  flashZoneId: string | null;
+  flashPulse: boolean;
 }
 
-const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({ zones, routePathSet, topZones }) => {
+const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({
+  zones,
+  routePathSet,
+  routePath,
+  topZones,
+  optimizeMode,
+  flashZoneId,
+  flashPulse,
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
   // Interpolate color based on density value (0-100)
@@ -227,13 +304,16 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({ zones, routePathSet, topZ
       densityMap.set(key, zone.density_score);
     });
 
+    const routeIndex = new Map(routePath.map((zoneId, index) => [zoneId, index + 1]));
+
     // Draw heat cells with smooth gradients
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
         const x = col * cellWidth;
         const y = row * cellHeight;
         const key = `${row}-${col}`;
-        const density = densityMap.get(key) || 0;
+        const rawDensity = densityMap.get(key) || 0;
+        const density = optimizeMode ? Math.max(8, rawDensity - 18) : rawDensity;
 
         // Draw cell background
         ctx.fillStyle = getColorForDensity(density);
@@ -246,12 +326,28 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({ zones, routePathSet, topZ
         ctx.lineWidth = 1;
         ctx.strokeRect(x, y, cellWidth, cellHeight);
 
-        // Highlight route path in green
+        // Highlight route path with visible blue glow + sequence number.
         const zone = zones.find(z => z.row === row && z.col === col);
         if (zone && routePathSet.has(zone.zone_id)) {
-          ctx.strokeStyle = '#4ade80';
+          ctx.shadowColor = 'rgba(87, 199, 255, 0.9)';
+          ctx.shadowBlur = 12;
+          ctx.strokeStyle = '#57c7ff';
           ctx.lineWidth = 3;
           ctx.strokeRect(x + 2, y + 2, cellWidth - 4, cellHeight - 4);
+          ctx.shadowBlur = 0;
+
+          const idx = routeIndex.get(zone.zone_id);
+          if (idx) {
+            ctx.fillStyle = 'rgba(8, 17, 31, 0.92)';
+            ctx.beginPath();
+            ctx.arc(x + cellWidth - 12, y + 12, 9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#7dd3fc';
+            ctx.font = 'bold 10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(idx), x + cellWidth - 12, y + 12);
+          }
         }
 
         // Highlight top zones (hotspots) with pulsing effect
@@ -261,6 +357,15 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({ zones, routePathSet, topZ
           ctx.setLineDash([4, 4]);
           ctx.strokeRect(x + 1, y + 1, cellWidth - 2, cellHeight - 2);
           ctx.setLineDash([]);
+        }
+
+        if (zone && flashZoneId === zone.zone_id && flashPulse) {
+          ctx.strokeStyle = '#ff2d55';
+          ctx.lineWidth = 4;
+          ctx.shadowColor = 'rgba(255, 45, 85, 0.95)';
+          ctx.shadowBlur = 14;
+          ctx.strokeRect(x + 1, y + 1, cellWidth - 2, cellHeight - 2);
+          ctx.shadowBlur = 0;
         }
 
         // Draw zone ID text
@@ -294,7 +399,7 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({ zones, routePathSet, topZ
       ctx.lineTo(col * cellWidth, canvas.height);
       ctx.stroke();
     }
-  }, [zones, routePathSet, topZones]);
+  }, [zones, routePathSet, routePath, topZones, optimizeMode, flashZoneId, flashPulse]);
 
   return (
     <canvas
@@ -307,21 +412,132 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({ zones, routePathSet, topZ
 };
 
 function App() {
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const mapMarkersRef = useRef<any[]>([]);
+  const routeLineRef = useRef<any>(null);
+  const hotspotCirclesRef = useRef<any[]>([]);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [journey, setJourney] = useState<JourneyPlan | null>(null);
   const [comparison, setComparison] = useState<DemoControlResponse | null>(null);
   const [toasts, setToasts] = useState<ToastNotice[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [flashPulse, setFlashPulse] = useState(false);
+  const [lastCriticalZone, setLastCriticalZone] = useState<string | null>(null);
   const [venueMap, setVenueMap] = useState<VenueMap | null>(null);
   const [staffPlan, setStaffPlan] = useState<StaffPlan | null>(null);
   const [organizerSummary, setOrganizerSummary] = useState<OrganizerSummary | null>(null);
   const [resilience, setResilience] = useState<ResilienceStatus | null>(null);
+  const [dataSource, setDataSource] = useState<DataSourceStatus | null>(null);
+  const [mapApiReady, setMapApiReady] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [pulsePhase, setPulsePhase] = useState(0);
+  const [showRebalance, setShowRebalance] = useState(false);
   const [phase, setPhase] = useState<EventPhase>('in-venue');
   const [origin, setOrigin] = useState('concourse-a');
   const [destination, setDestination] = useState('seat-block');
   const [status, setStatus] = useState('Connecting to live crowd feed...');
   const [error, setError] = useState<string | null>(null);
+  const [uiMode, setUiMode] = useState<UiMode>(() => {
+    const stored = window.localStorage.getItem('flowsync-ui-mode');
+    return stored === 'light' ? 'light' : 'dark';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', uiMode);
+    window.localStorage.setItem('flowsync-ui-mode', uiMode);
+  }, [uiMode]);
+
+  useEffect(() => {
+    if (!GOOGLE_MAPS_API_KEY) {
+      setMapApiReady(false);
+      setMapError('Google Maps API key missing');
+      return;
+    }
+
+    let pollTimer: number | null = null;
+    let mounted = true;
+
+    const hasUsableMaps = () => {
+      const maps = (window as unknown as { google?: { maps?: { Map?: unknown } } }).google?.maps;
+      return typeof maps?.Map === 'function';
+    };
+
+    const startPollingForMaps = () => {
+      pollTimer = window.setInterval(() => {
+        if (hasUsableMaps()) {
+          if (!mounted) {
+            return;
+          }
+          setMapApiReady(true);
+          setMapError(null);
+          if (pollTimer !== null) {
+            window.clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        }
+      }, 120);
+    };
+
+    (window as any).gm_authFailure = () => {
+      if (!mounted) {
+        return;
+      }
+      setMapApiReady(false);
+      setMapError('Google Maps authentication failed. Check API key restrictions and billing.');
+    };
+
+    if (hasUsableMaps()) {
+      setMapApiReady(true);
+      setMapError(null);
+      return;
+    }
+
+    setMapApiReady(false);
+    setMapError('Connecting to Google Maps...');
+
+    const existing = document.getElementById('flowsync-google-maps') as HTMLScriptElement | null;
+    if (existing) {
+      startPollingForMaps();
+      return () => {
+        if (pollTimer !== null) {
+          window.clearInterval(pollTimer);
+        }
+      };
+    }
+
+    const script = document.createElement('script');
+    script.id = 'flowsync-google-maps';
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => startPollingForMaps();
+    script.onerror = () => {
+      if (!mounted) {
+        return;
+      }
+      setMapApiReady(false);
+      setMapError('Unable to load Google Maps script.');
+    };
+    document.head.appendChild(script);
+
+    return () => {
+      mounted = false;
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const pulseTimer = window.setInterval(() => {
+      setPulsePhase((current) => (current + 1) % 1000);
+    }, 420);
+
+    return () => window.clearInterval(pulseTimer);
+  }, []);
 
   useEffect(() => {
     if (phase === 'arrival') {
@@ -347,11 +563,38 @@ function App() {
   }, [phase]);
 
   useEffect(() => {
+    if (!mapApiReady || !mapContainerRef.current) {
+      return;
+    }
+
+    const googleMaps = (window as any).google?.maps;
+    if (!googleMaps || typeof googleMaps.Map !== 'function') {
+      return;
+    }
+
+    if (!mapInstanceRef.current) {
+      try {
+        mapInstanceRef.current = new googleMaps.Map(mapContainerRef.current, {
+          center: STADIUM_CENTER,
+          zoom: 16,
+          mapTypeId: 'hybrid',
+          streetViewControl: false,
+          fullscreenControl: false,
+        });
+      } catch {
+        setMapApiReady(false);
+        setMapError('Google Maps initialization failed.');
+      }
+    }
+  }, [mapApiReady]);
+
+  useEffect(() => {
     let mounted = true;
 
     const load = async () => {
       try {
-        const [snapshotResponse, alertsResponse, journeyResponse, venueMapResponse, staffResponse, organizerResponse, resilienceResponse] =
+        setIsRefreshing(true);
+        const [snapshotResponse, alertsResponse, journeyResponse, venueMapResponse, staffResponse, organizerResponse, resilienceResponse, dataSourceResponse] =
           await Promise.all([
           fetch(`${API_BASE}/snapshot`),
           fetch(`${API_BASE}/alerts`),
@@ -362,6 +605,7 @@ function App() {
           fetch(`${API_BASE}/staff-actions?phase=${encodeURIComponent(phase)}`),
           fetch(`${API_BASE}/organizer-summary`),
           fetch(`${API_BASE}/resilience`),
+          fetch(`${API_BASE}/data-source`),
         ]);
 
         if (
@@ -371,7 +615,8 @@ function App() {
           !venueMapResponse.ok ||
           !staffResponse.ok ||
           !organizerResponse.ok ||
-          !resilienceResponse.ok
+          !resilienceResponse.ok ||
+          !dataSourceResponse.ok
         ) {
           throw new Error('API returned an unexpected response');
         }
@@ -383,6 +628,10 @@ function App() {
         const staffData = (await staffResponse.json()) as StaffPlan;
         const organizerData = (await organizerResponse.json()) as OrganizerSummary;
         const resilienceData = (await resilienceResponse.json()) as ResilienceStatus;
+        const dataSourceData = (await dataSourceResponse.json()) as DataSourceStatus;
+
+        // Small processing delay makes updates feel intentional instead of abrupt.
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
 
         if (!mounted) {
           return;
@@ -395,14 +644,17 @@ function App() {
         setStaffPlan(staffData);
         setOrganizerSummary(organizerData);
         setResilience(resilienceData);
-        setStatus('Live updates active');
+        setDataSource(dataSourceData);
+        setStatus(dataSourceData.source === 'live' ? 'Live feed active' : 'Simulation feed active');
         setError(null);
+        setIsRefreshing(false);
       } catch (loadError) {
         if (!mounted) {
           return;
         }
         setError(loadError instanceof Error ? loadError.message : 'Unable to reach the backend');
         setStatus('Waiting for API connection');
+        setIsRefreshing(false);
       }
     };
 
@@ -426,25 +678,126 @@ function App() {
     : averageDensity;
   const topZones = [...heatmap].sort((left, right) => right.density_score - left.density_score).slice(0, 3);
   const shortestQueue = [...liveQueues].sort((left, right) => left.wait_time_minutes - right.wait_time_minutes)[0] ?? null;
-  const routePathSet = new Set(journey?.route.path ?? []);
-      <div className="toast-stack">
-        {toasts.map((toast) => (
-          <article key={toast.id} className={`toast ${toast.severity}`}>
-            <strong>{toast.title}</strong>
-            <span>{toast.message}</span>
-          </article>
-        ))}
-      </div>
+  const routePath = journey?.route.path ?? [];
+  const routePathSet = new Set(routePath);
+  const focusZone = topZones[0] ?? null;
+  const predictedZone = topZones[1]?.zone_id ?? 'zone-7';
+  const optimizeMode = comparison?.mode === 'optimize-crowd';
+  const impactMinutes = comparison
+    ? Math.max(0, comparison.before.longest_queue - comparison.after.longest_queue)
+    : 3;
+
+  useEffect(() => {
+    if (!mapApiReady || !mapInstanceRef.current || !heatmap.length) {
+      return;
+    }
+
+    const googleMaps = (window as any).google?.maps;
+    if (!googleMaps) {
+      return;
+    }
+
+    mapMarkersRef.current.forEach((marker) => {
+      if (marker && 'map' in marker) {
+        marker.map = null;
+        return;
+      }
+      if (marker && typeof marker.setMap === 'function') {
+        marker.setMap(null);
+      }
+    });
+    mapMarkersRef.current = [];
+
+    heatmap.forEach((zone) => {
+      const isOnRoute = routePathSet.has(zone.zone_id);
+      const pulseFactor = 1 + 0.14 * Math.sin(pulsePhase / 2 + zone.row + zone.col);
+      const density = optimizeMode ? Math.max(5, zone.density_score - 18) : zone.density_score;
+      const marker = new googleMaps.Marker({
+        position: zoneToLatLng(zone),
+        map: mapInstanceRef.current,
+        title: `${zoneDisplayName(zone.zone_id)} • Density ${zone.density_score}%`,
+        icon: {
+          path: googleMaps.SymbolPath.CIRCLE,
+          fillColor: markerColorByDensity(density),
+          fillOpacity: optimizeMode ? 0.76 : 0.86,
+          strokeColor: isOnRoute ? '#57c7ff' : '#0b1220',
+          strokeWeight: isOnRoute ? 3 : 1,
+          scale: (isOnRoute ? 8 : 6) * pulseFactor,
+        },
+      });
+      mapMarkersRef.current.push(marker);
+    });
+
+    hotspotCirclesRef.current.forEach((circle) => circle.setMap(null));
+    hotspotCirclesRef.current = [];
+
+    topZones.slice(0, 2).forEach((zone, idx) => {
+      const circle = new googleMaps.Circle({
+        strokeColor: idx === 0 ? '#ff2d55' : '#f59e0b',
+        strokeOpacity: 0.8,
+        strokeWeight: idx === 0 ? 3 : 2,
+        fillColor: idx === 0 ? '#ff2d55' : '#f59e0b',
+        fillOpacity: 0.14 + Math.abs(Math.sin(pulsePhase / 8)) * 0.12,
+        map: mapInstanceRef.current,
+        center: zoneToLatLng(zone),
+        radius: 28 + zone.density_score * 0.9 + Math.abs(Math.sin(pulsePhase / 9)) * 16,
+      });
+      hotspotCirclesRef.current.push(circle);
+    });
+
+    if (routeLineRef.current) {
+      routeLineRef.current.setMap(null);
+      routeLineRef.current = null;
+    }
+
+    const routeZones = routePath
+      .map((zoneId) => heatmap.find((zone) => zone.zone_id === zoneId))
+      .filter((zone): zone is Zone => Boolean(zone))
+      .map((zone) => zoneToLatLng(zone));
+
+    if (routeZones.length >= 2) {
+      routeLineRef.current = new googleMaps.Polyline({
+        path: routeZones,
+        geodesic: false,
+        strokeColor: '#57c7ff',
+        strokeOpacity: 0.9,
+        strokeWeight: 4,
+      });
+      routeLineRef.current.setMap(mapInstanceRef.current);
+    }
+  }, [heatmap, mapApiReady, optimizeMode, pulsePhase, routePath, routePathSet, topZones]);
+
+  useEffect(() => {
+    const pulseTimer = window.setInterval(() => {
+      setFlashPulse((current) => !current);
+    }, 340);
+
+    return () => window.clearInterval(pulseTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!focusZone || focusZone.density_score < 75 || lastCriticalZone === focusZone.zone_id) {
+      return;
+    }
+
+    pushToast({
+      title: `🚨 ${focusZone.zone_id.toUpperCase()} critical congestion`,
+      message: `Density at ${focusZone.density_score}%. AI rerouting now active.`,
+      severity: 'high',
+    });
+    setLastCriticalZone(focusZone.zone_id);
+  }, [focusZone, lastCriticalZone]);
 
 
   const pushToast = (notice: Omit<ToastNotice, 'id'>) => {
+    const toastId = Date.now() + Math.floor(Math.random() * 1000);
     setToasts((current) => [
-      { id: Date.now() + Math.floor(Math.random() * 1000), ...notice },
+      { id: toastId, ...notice },
       ...current.slice(0, 2),
     ]);
     window.setTimeout(() => {
-      setToasts((current) => current.filter((item) => item.id !== current[0]?.id));
-    }, 2600);
+      setToasts((current) => current.filter((item) => item.id !== toastId));
+    }, 3000);
   };
 
   const triggerDemoControl = async (action: DemoScenario) => {
@@ -460,6 +813,11 @@ function App() {
       setJourney(payload.journey);
       setAlerts(payload.alerts);
       setRefreshKey((current) => current + 1);
+
+      if (action === 'optimize-crowd') {
+        setShowRebalance(true);
+        window.setTimeout(() => setShowRebalance(false), 1400);
+      }
       
       // Enhanced toast with more dramatic messaging
       const toastMessages: Record<DemoScenario, { title: string; emoji: string }> = {
@@ -506,17 +864,52 @@ function App() {
 
   return (
     <main className="app-shell">
+      <div className="toast-stack">
+        {toasts.map((toast) => (
+          <article key={toast.id} className={`toast ${toast.severity}`}>
+            <strong>{toast.title}</strong>
+            <span>{toast.message}</span>
+          </article>
+        ))}
+      </div>
+
       <section className="hero">
         <div>
           <p className="eyebrow">FlowSync AI</p>
           <h1>Real-time crowd intelligence for dense event environments.</h1>
           <p className="lede">
-            Coordinate arrivals, in-venue movement, halftime surges, and departure flows with one live operating
-            surface.
+            Narendra Modi Stadium digital twin: real map geometry with controlled simulated crowd behavior for
+            decisive operations during high-pressure moments.
           </p>
         </div>
         <div className="hero-card">
-          <span className="status-pill">{status}</span>
+          <div className="status-row">
+            <span className="status-pill">{status}</span>
+            <span className={`map-pill ${mapApiReady ? 'ready' : 'pending'}`}>
+              {GOOGLE_MAPS_API_KEY ? (mapApiReady ? 'Maps API connected' : 'Maps API loading...') : 'Maps API key missing'}
+            </span>
+            <span className={`map-pill ${dataSource?.source === 'live' ? 'ready' : 'pending'}`}>
+              {dataSource?.source === 'live'
+                ? `Data source: Live${dataSource.live_snapshot_age_seconds !== null ? ` (${dataSource.live_snapshot_age_seconds}s)` : ''}`
+                : 'Data source: Simulated'}
+            </span>
+          </div>
+          <div className="mode-switch" role="group" aria-label="UI mode switch">
+            <button
+              type="button"
+              className={`mode-button ${uiMode === 'dark' ? 'active' : ''}`}
+              onClick={() => setUiMode('dark')}
+            >
+              Command mode
+            </button>
+            <button
+              type="button"
+              className={`mode-button ${uiMode === 'light' ? 'active' : ''}`}
+              onClick={() => setUiMode('light')}
+            >
+              Day mode
+            </button>
+          </div>
           <div className="hero-metrics">
             <div>
               <strong>{averageDensity}</strong>
@@ -549,46 +942,67 @@ function App() {
         </div>
       </section>
 
-      <section className="decision-strip">
-        <article className="decision-card emphasis">
-          <span>AI recommends rerouting via {journey?.recommended_anchor ?? 'the lowest-density gate'}</span>
-          <strong>{journey?.route.path.join(' → ') ?? 'Waiting for route data'}</strong>
-          <p>Predicted congestion in 2 minutes. Avoid the red path cells and keep the green path open.</p>
+      <section className="focus-panel">
+        <article className="focus-card">
+          <span className="focus-label">Current problem</span>
+          <strong className="focus-value">
+            {focusZone ? `${zoneDisplayName(focusZone.zone_id)} congestion (${focusZone.density_score}%)` : 'Waiting for zone data'}
+          </strong>
         </article>
-        <article className="decision-card">
-          <span>Top problem zones</span>
-          <strong>{topZones.map((zone) => zone.zone_id).join(', ') || '--'}</strong>
-          <p>Only the three most critical hotspots are surfaced here.</p>
+        <article className="focus-card">
+          <span className="focus-label">AI action</span>
+          <strong className="focus-value">Redirecting to {LOCATION_LABELS[journey?.recommended_anchor ?? ''] ?? 'South Gate Corridor'}</strong>
         </article>
-        <article className="decision-card">
-          <span>Shortest queue</span>
-          <strong>{shortestQueue ? `${shortestQueue.stall_id} · ${shortestQueue.wait_time_minutes} min` : '--'}</strong>
-          <p>Best immediate queue option for attendees.
-          </p>
-        </article>
-        <article className="decision-card compare">
-          <span>Before vs After</span>
-          <strong>{comparison?.mode === 'optimize-crowd' ? 'Crowd optimized' : 'Live mode'}</strong>
-          <p>
-            Wait time {comparison ? `${comparison.before.longest_queue} → ${comparison.after.longest_queue} min` : '--'}
-          </p>
-          <p>
-            Density {comparison ? `${comparison.before.avg_density} → ${comparison.after.avg_density}` : '--'}
-          </p>
+        <article className="focus-card impact">
+          <span className="focus-label">Impact</span>
+          <strong className="focus-value">Wait time reduced by {impactMinutes} mins</strong>
         </article>
       </section>
 
+      <section className="panel stadium-panel">
+        <div className="panel-header">
+          <div>
+            <p className="panel-kicker">Real Venue Layer</p>
+            <h2>Narendra Modi Stadium, Ahmedabad</h2>
+          </div>
+          <span className="timestamp">
+            Real map + {dataSource?.source === 'live' ? 'live telemetry' : 'simulated crowd events'}
+          </span>
+        </div>
+        <div className="stadium-map-shell">
+          <div ref={mapContainerRef} className="stadium-map" />
+          {!mapApiReady || mapError ? (
+            <div className="map-overlay">{mapError ?? 'Map API loading. Heat simulation and routing are still active.'}</div>
+          ) : null}
+          {showRebalance ? <div className="rebalance-overlay">Rebalancing traffic...</div> : null}
+        </div>
+        <div className="zone-meaning-strip">
+          <span className="zone-chip">Zone 1 → Gate A</span>
+          <span className="zone-chip">Zone 2 → Food Court North</span>
+          <span className="zone-chip">Zone 3 → West Stand</span>
+          <span className="zone-chip">Zone 4 → Parking A</span>
+        </div>
+      </section>
+
       <section className="dashboard-grid">
-        <article className="panel heatmap-panel">
+        <article className={`panel heatmap-panel ${isRefreshing ? 'panel-loading' : ''}`}>
           <div className="panel-header">
             <div>
               <p className="panel-kicker">Crowd Heatmap</p>
-              <h2>Live density visualization</h2>
+              <h2>{optimizeMode ? 'After optimization view' : 'Live density visualization'}</h2>
             </div>
             <span className="timestamp">{snapshot?.generated_at ?? 'Awaiting live data'}</span>
           </div>
           <div className="heatmap-container">
-            <HeatmapCanvas zones={heatmap} routePathSet={routePathSet} topZones={topZones} />
+            <HeatmapCanvas
+              zones={heatmap}
+              routePathSet={routePathSet}
+              routePath={routePath}
+              topZones={topZones}
+              optimizeMode={optimizeMode}
+              flashZoneId={focusZone?.zone_id ?? null}
+              flashPulse={flashPulse}
+            />
             <div className="heatmap-legend">
               <div className="legend-item">
                 <div style={{ background: 'rgb(30, 144, 255)' }}></div>
@@ -603,8 +1017,8 @@ function App() {
                 <span>High</span>
               </div>
               <div className="legend-item">
-                <div style={{ border: '2px solid #4ade80' }}></div>
-                <span>Route</span>
+                <div style={{ border: '2px solid #57c7ff' }}></div>
+                <span>Route glow</span>
               </div>
               <div className="legend-item">
                 <div style={{ border: '2px dashed #ff6b6b' }}></div>
@@ -665,28 +1079,23 @@ function App() {
 
       <section className="decision-strip">
         <article className="decision-card emphasis">
-          <span>🤖 AI recommends rerouting via {journey?.recommended_anchor ?? 'the lowest-density gate'}</span>
-          <strong>{journey?.route.path.join(' → ') ?? 'Waiting for route data'}</strong>
-          <p>Predicted congestion in 2 minutes. Green path = optimal route. Red zones = areas to avoid.</p>
-        </article>
-        <article className="decision-card">
-          <span>🔥 Top problem zones</span>
-          <strong>{topZones.map((zone) => zone.zone_id).join(', ') || '--'}</strong>
-          <p>Only the three most critical hotspots are surfaced. Real-time updates every second.</p>
-        </article>
-        <article className="decision-card">
-          <span>⏱️ Shortest queue</span>
-          <strong>{shortestQueue ? `${shortestQueue.stall_id} · ${shortestQueue.wait_time_minutes} min` : '--'}</strong>
-          <p>Best immediate queue option for attendees. Avoids future congestion.</p>
+          <span>🧠 Predicted congestion in 2 mins</span>
+          <strong>Predicted congestion in {REAL_ZONE_LABELS[predictedZone] ?? 'Gate B'} in 2 mins</strong>
+          <p>Model forecasts pressure build-up here next. Rerouting is pre-emptive.</p>
         </article>
         <article className="decision-card compare">
-          <span>📊 Before vs After</span>
-          <strong>{comparison?.mode === 'optimize-crowd' ? '✓ Crowd Optimized' : '🟢 Live Mode'}</strong>
+          <span>📉 Before vs After</span>
+          <strong>{optimizeMode ? 'Optimization active' : 'Baseline live mode'}</strong>
           <p>
-            Wait time {comparison ? `${comparison.before.longest_queue} → ${comparison.after.longest_queue} min` : '--'} 
-            <br/>
-            Density {comparison ? `${comparison.before.avg_density} → ${comparison.after.avg_density}` : '--'}
+            Queue wait {comparison ? `${comparison.before.longest_queue} → ${comparison.after.longest_queue} min` : '--'}
+            <br />
+            Avg density {comparison ? `${comparison.before.avg_density} → ${comparison.after.avg_density}` : '--'}
           </p>
+        </article>
+        <article className="decision-card">
+          <span>⏱ Best current queue</span>
+          <strong>{shortestQueue ? `${shortestQueue.stall_id} · ${shortestQueue.wait_time_minutes} min` : '--'}</strong>
+          <p>Operationally safest immediate diversion from congested route.</p>
         </article>
       </section>
 
@@ -713,7 +1122,17 @@ function App() {
                 <strong>{journey ? `${journey.route.avoidance_score}%` : '--'}</strong>
               </div>
             </div>
-            <p className="path-line">{journey?.route.path.join(' → ') ?? 'Route will appear after connection is ready.'}</p>
+            <div className="route-chip-list">
+              {routePath.length ? (
+                routePath.map((zoneId) => (
+                  <span key={zoneId} className="route-chip">
+                    {REAL_ZONE_LABELS[zoneId] ?? zoneId}
+                  </span>
+                ))
+              ) : (
+                <span className="route-chip muted">Route will appear after connection is ready.</span>
+              )}
+            </div>
             <div className="advice-list">
               {journey?.advice.map((item) => (
                 <div key={item} className="advice-item">
@@ -755,7 +1174,7 @@ function App() {
         </aside>
       </section>
 
-      <section className="panel venue-panel">
+      <section className="panel venue-panel subdued-panel">
         <div className="panel-header">
           <div>
             <p className="panel-kicker">Venue Map</p>
@@ -865,7 +1284,7 @@ function App() {
         </div>
       </section>
 
-      <section className="panel staff-panel">
+      <section className="panel staff-panel subdued-panel">
         <div className="panel-header">
           <div>
             <p className="panel-kicker">Staff Control</p>
@@ -885,7 +1304,7 @@ function App() {
         </div>
       </section>
 
-      <section className="panel resilience-panel">
+      <section className="panel resilience-panel subdued-panel">
         <div className="panel-header">
           <div>
             <p className="panel-kicker">Continuity</p>
@@ -913,7 +1332,7 @@ function App() {
         </div>
       </section>
 
-      <section className="panel alerts-panel">
+      <section className="panel alerts-panel subdued-panel">
         <div className="panel-header">
           <div>
             <p className="panel-kicker">Alerts System</p>

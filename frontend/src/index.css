@@ -1,9 +1,11 @@
 html {
-  background: #060c16;
+  background: var(--bg-root, #060c16);
 }
 
 body {
   min-height: 100vh;
+  color: var(--text-main, #f4f7fb);
+  background: transparent;
 }
 
 a {

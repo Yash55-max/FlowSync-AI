@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import threading
 import time
@@ -34,6 +35,9 @@ class CrowdSimulator:
         self._density: Dict[str, int] = {}
         self._timestamp = self._now()
         self._scenario = "normal"
+        self._live_snapshot: dict | None = None
+        self._live_snapshot_received_at: float | None = None
+        self._live_snapshot_ttl_seconds = max(5, int(os.getenv("FLOWSYNC_LIVE_SNAPSHOT_TTL_SECONDS", "20")))
         self._seed_state()
 
     def start(self) -> None:
@@ -51,6 +55,9 @@ class CrowdSimulator:
 
     def snapshot(self) -> dict:
         with self._lock:
+            live_snapshot = self._active_live_snapshot_unlocked()
+            if live_snapshot is not None:
+                return live_snapshot
             return {
                 "generated_at": self._timestamp,
                 "zones": [self._zone_payload(zone_id, density) for zone_id, density in self._density.items()],
@@ -60,7 +67,122 @@ class CrowdSimulator:
 
     def heatmap(self) -> list[dict]:
         with self._lock:
+            live_snapshot = self._active_live_snapshot_unlocked()
+            if live_snapshot is not None:
+                return list(live_snapshot["zones"])
             return [self._zone_payload(zone_id, density) for zone_id, density in sorted(self._density.items())]
+
+    def ingest_live_snapshot(self, payload: dict) -> dict:
+        with self._lock:
+            zones_payload = payload.get("zones")
+            if not isinstance(zones_payload, list) or not zones_payload:
+                raise ValueError("Payload must include a non-empty 'zones' array")
+
+            generated_at = str(payload.get("generated_at") or self._now())
+            normalized_zones: list[dict] = []
+
+            for zone in zones_payload:
+                if not isinstance(zone, dict):
+                    continue
+                zone_id_raw = str(zone.get("zone_id", "")).strip().lower()
+                if not zone_id_raw.startswith("zone-"):
+                    continue
+
+                try:
+                    parsed_row, parsed_col = self._parse_zone(zone_id_raw)
+                except (IndexError, ValueError):
+                    continue
+
+                raw_density = zone.get("density_score", 0)
+                try:
+                    density = self._clamp(int(round(float(raw_density))), 0, 100)
+                except (TypeError, ValueError):
+                    density = 0
+
+                row = zone.get("row")
+                col = zone.get("col")
+                if not isinstance(row, int):
+                    row = parsed_row
+                if not isinstance(col, int):
+                    col = parsed_col
+
+                if not (0 <= row < self.rows and 0 <= col < self.cols):
+                    row, col = parsed_row, parsed_col
+
+                self._density[zone_id_raw] = density
+                normalized_zones.append(
+                    {
+                        "zone_id": zone_id_raw,
+                        "row": row,
+                        "col": col,
+                        "density_level": "low" if density < 35 else "medium" if density < 70 else "high",
+                        "density_score": density,
+                        "timestamp": generated_at,
+                    }
+                )
+
+            if not normalized_zones:
+                raise ValueError("No valid zones were found in payload")
+
+            queue_payload = payload.get("queues")
+            if isinstance(queue_payload, list):
+                normalized_queues: list[dict] = []
+                for item in queue_payload:
+                    if not isinstance(item, dict):
+                        continue
+                    stall_id = str(item.get("stall_id", "")).strip().lower()
+                    if not stall_id:
+                        continue
+                    wait_raw = item.get("wait_time_minutes", 0)
+                    try:
+                        wait_time = max(0, int(round(float(wait_raw))))
+                    except (TypeError, ValueError):
+                        wait_time = 0
+                    alternative = str(item.get("alternative") or f"{stall_id}-alt")
+                    normalized_queues.append(
+                        {
+                            "stall_id": stall_id,
+                            "wait_time_minutes": wait_time,
+                            "alternative": alternative,
+                        }
+                    )
+                self._queue_state = {item["stall_id"]: item for item in normalized_queues} or self._build_queue_state()
+            else:
+                self._queue_state = self._build_queue_state()
+
+            self._timestamp = generated_at
+            self._live_snapshot_received_at = time.time()
+            self._live_snapshot = {
+                "generated_at": self._timestamp,
+                "zones": sorted(normalized_zones, key=lambda item: item["zone_id"]),
+                "queues": list(self._queue_state.values()),
+                "high_density_zones": self._high_density_zone_count(),
+            }
+            return self._live_snapshot
+
+    def data_source_status(self) -> dict:
+        with self._lock:
+            active_live = self._active_live_snapshot_unlocked()
+            if active_live is not None:
+                age_seconds = 0
+                if self._live_snapshot_received_at is not None:
+                    age_seconds = max(0, int(round(time.time() - self._live_snapshot_received_at)))
+                return {
+                    "source": "live",
+                    "stale": False,
+                    "live_snapshot_age_seconds": age_seconds,
+                    "live_snapshot_ttl_seconds": self._live_snapshot_ttl_seconds,
+                    "generated_at": active_live["generated_at"],
+                }
+
+            stale = self._live_snapshot is not None
+            return {
+                "source": "simulated",
+                "stale": stale,
+                "live_snapshot_age_seconds": None,
+                "live_snapshot_ttl_seconds": self._live_snapshot_ttl_seconds,
+                "generated_at": self._timestamp,
+            }
 
     def queue_time(self, stall_id: str) -> dict:
         with self._lock:
@@ -292,6 +414,8 @@ class CrowdSimulator:
 
     def demo_control(self, action: str) -> dict:
         with self._lock:
+            self._live_snapshot = None
+            self._live_snapshot_received_at = None
             normalized_action = self._normalize_demo_action(action)
             before = self._scenario_metrics()
             self._scenario = normalized_action
@@ -324,6 +448,9 @@ class CrowdSimulator:
 
     def _advance_state(self) -> None:
         with self._lock:
+            if self._active_live_snapshot_unlocked() is not None:
+                return
+
             self._tick += 1
             for zone_id, current_density in list(self._density.items()):
                 row, col = self._parse_zone(zone_id)
@@ -441,7 +568,17 @@ class CrowdSimulator:
         for zone_id, delta in deltas.items():
             if zone_id in self._density:
                 self._density[zone_id] = self._clamp(self._density[zone_id] + delta, 6, 96)
-        return sum(1 for density in self._density.values() if density >= 70)
+
+    def _active_live_snapshot_unlocked(self) -> dict | None:
+        if self._live_snapshot is None or self._live_snapshot_received_at is None:
+            return None
+
+        if time.time() - self._live_snapshot_received_at <= self._live_snapshot_ttl_seconds:
+            return self._live_snapshot
+
+        self._live_snapshot = None
+        self._live_snapshot_received_at = None
+        return None
 
     def _resolve_point(self, value: str, phase: str | None = None) -> GridPoint:
         aliases = {

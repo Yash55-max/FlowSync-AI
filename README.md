@@ -18,7 +18,7 @@ FlowSync AI is a real-time crowd intelligence platform for large events. It comb
 - Frontend: React + TypeScript + Vite
 - Backend: FastAPI + Python
 - Algorithms: Grid-based pathfinding with density-weighted costs
-- Data Mode: Real-time simulation (MVP-friendly, no mandatory external credentials)
+- Data Mode: Hybrid (simulated by default, live snapshot ingest supported)
 
 ## Project Structure
 
@@ -72,6 +72,8 @@ npm run dev
 - `GET /venue-map?phase=...` - Venue node data by phase
 - `GET /staff-actions?phase=...` - Suggested interventions
 - `POST /demo-control?action=...` - Trigger scenario modes
+- `POST /ingest/live-snapshot` - Push a real telemetry snapshot into the API
+- `GET /data-source` - Current source status (`live` or `simulated`)
 
 ## Demo Controls
 
@@ -86,7 +88,27 @@ These controls are designed for live demos and stress-case walkthroughs.
 
 - The MVP runs with simulated data out of the box.
 - To change API host in frontend, set `VITE_API_BASE_URL` in `frontend/.env`.
-- For production deployment, replace simulation inputs with live telemetry connectors.
+- Live snapshot TTL fallback can be tuned with `FLOWSYNC_LIVE_SNAPSHOT_TTL_SECONDS` (default: `20`).
+- For production deployment, feed snapshots from telemetry adapters (turnstile/CCTV/Wi-Fi/beacons) via `POST /ingest/live-snapshot`.
+
+## Live Snapshot Ingest Example
+
+```json
+{
+	"generated_at": "2026-04-15T12:30:00Z",
+	"zones": [
+		{ "zone_id": "zone-1", "row": 0, "col": 0, "density_score": 88 },
+		{ "zone_id": "zone-2", "row": 0, "col": 1, "density_score": 64 }
+	],
+	"queues": [
+		{ "stall_id": "stall-1", "wait_time_minutes": 12, "alternative": "stall-2" }
+	]
+}
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/ingest/live-snapshot" -ContentType "application/json" -Body (Get-Content .\sample-live.json -Raw)
+```
 
 ## Development Workflow
 

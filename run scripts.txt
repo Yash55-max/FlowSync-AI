@@ -1,0 +1,27 @@
+FlowSync AI - Run Scripts (Windows PowerShell)
+
+Option 1: Start manually (recommended)
+
+Terminal 1 (Backend)
+Set-Location "d:\FlowSync AI"
+& ".\backend\.venv\Scripts\python.exe" -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000
+
+Terminal 2 (Frontend)
+Set-Location "d:\FlowSync AI\frontend"
+npm run dev -- --host 0.0.0.0 --port 5173
+
+App URLs
+Frontend: http://localhost:5173
+Backend:  http://localhost:8000
+API Docs: http://localhost:8000/docs
+
+Option 2: Start both from one terminal (opens two new windows)
+Start-Process powershell -ArgumentList '-NoExit','-Command','Set-Location "d:\FlowSync AI"; & ".\backend\.venv\Scripts\python.exe" -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000'
+Start-Process powershell -ArgumentList '-NoExit','-Command','Set-Location "d:\FlowSync AI\frontend"; npm run dev -- --host 0.0.0.0 --port 5173'
+
+Stop servers
+- In each server terminal, press Ctrl+C.
+
+If backend venv is missing packages
+Set-Location "d:\FlowSync AI\backend"
+& ".\.venv\Scripts\python.exe" -m pip install -r requirements.txt

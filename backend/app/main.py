@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .simulator import CrowdSimulator
@@ -87,3 +87,22 @@ def alerts() -> dict:
 @app.get("/organizer-summary")
 def organizer_summary() -> dict:
     return simulator.organizer_summary()
+
+
+@app.post("/ingest/live-snapshot")
+def ingest_live_snapshot(payload: dict = Body(...)) -> dict:
+    try:
+        snapshot_payload = simulator.ingest_live_snapshot(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "status": "accepted",
+        "data_source": "live",
+        "snapshot": snapshot_payload,
+    }
+
+
+@app.get("/data-source")
+def data_source() -> dict:
+    return simulator.data_source_status()

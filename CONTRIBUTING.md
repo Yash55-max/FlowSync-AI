@@ -11,7 +11,7 @@ Please be respectful, inclusive, and professional in all interactions. We are co
 1. **Fork** the repository on GitHub
 2. **Clone** your fork locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/FlowSync-AI.git
+   git clone https://github.com/Yash55-max/FlowSync-AI.git
    cd FlowSync-AI
    ```
 3. **Create** a new branch for your feature:
