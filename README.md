@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Yash55-max/FlowSync-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Yash55-max/FlowSync-AI/actions/workflows/ci.yml)
 
-FlowSync AI is a real-time crowd intelligence platform for large events. It combines live crowd simulation, density-aware routing, queue prediction, and operator-focused dashboards so attendees and staff can make faster, safer movement decisions.
+FlowSync AI is a real-time crowd intelligence platform for large events. It combines live crowd simulation, density-aware routing, queue prediction, and operator-focused dashboards to address crowd movement, waiting times, and real-time coordination while ensuring a seamless and enjoyable attendee experience.
 
 ## Core Capabilities
 

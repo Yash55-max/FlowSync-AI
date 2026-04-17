@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 
+import { getPageFromHash, isMapPage, PAGE_ITEMS, type AppPage, type UiMode } from './appPages';
+import { markerColorByDensity, zoneDisplayName, zoneToLatLng } from './venueHelpers';
+import { getPopularLocationById, getSmartPopularLocation, POPULAR_LOCATIONS, popularLocationToLatLng } from './popularLocations';
+import { getDefaultVenue, getVenueById, VENUE_GROUPS } from './venues';
+
 type EventPhase = 'arrival' | 'in-venue' | 'halftime' | 'departure';
 
 type Zone = {
@@ -139,8 +144,6 @@ type ToastNotice = {
   severity: 'low' | 'medium' | 'high';
 };
 
-type UiMode = 'dark' | 'light';
-
 type OrganizerSummary = {
   generated_at: string;
   avg_density: number;
@@ -181,36 +184,6 @@ const DEMO_CONTROLS: Array<{ label: string; action: DemoScenario; tone: 'low' | 
   { label: '✨ Optimize Crowd', action: 'optimize-crowd', tone: 'low' },
 ];
 
-const STADIUM_CENTER = { lat: 23.0917, lng: 72.5977 };
-
-const REAL_ZONE_LABELS: Record<string, string> = {
-  'zone-1': 'Gate A',
-  'zone-2': 'Food Court North',
-  'zone-3': 'West Stand',
-  'zone-4': 'Parking A',
-  'zone-5': 'Gate B',
-  'zone-6': 'Food Court East',
-  'zone-7': 'South Concourse',
-  'zone-8': 'Parking B',
-  'zone-9': 'Gate C',
-  'zone-10': 'Retail Plaza',
-  'zone-11': 'North Ramp',
-  'zone-12': 'East Stand Entry',
-  'zone-13': 'Upper Concourse',
-  'zone-14': 'Transit Bay',
-  'zone-15': 'Gate D',
-  'zone-16': 'Family Block',
-  'zone-17': 'Hospitality Deck',
-  'zone-18': 'Food Court West',
-  'zone-19': 'South Gate Corridor',
-  'zone-20': 'Central Spine',
-  'zone-21': 'Exit A',
-  'zone-22': 'Exit B',
-  'zone-23': 'Medical Bay',
-  'zone-24': 'Security Checkpoint',
-  'zone-25': 'Halftime Hotspot',
-};
-
 const LOCATION_LABELS: Record<string, string> = {
   'parking-a': 'Parking A',
   'gate-1': 'Gate A',
@@ -222,18 +195,29 @@ const LOCATION_LABELS: Record<string, string> = {
   'exit-a': 'Exit A',
 };
 
-const zoneDisplayName = (zoneId: string) => `${REAL_ZONE_LABELS[zoneId] ?? zoneId.toUpperCase()} (${zoneId})`;
-
-const markerColorByDensity = (density: number) => {
-  if (density >= 75) return '#ff3b30';
-  if (density >= 45) return '#f59e0b';
-  return '#22c55e';
+const HERO_COPY: Record<AppPage, { title: string; subtitle: string }> = {
+  overview: {
+    title: 'Real-time crowd intelligence for live stadium operations',
+    subtitle:
+      'Managing 100,000 people in real time with predictive flow control, density-aware routing, and high-speed operator decisions.',
+  },
+  'live-map': {
+    title: 'Live venue command map',
+    subtitle: 'Track density, hotspots, and safe movement corridors as conditions evolve across the stadium.',
+  },
+  journey: {
+    title: 'Journey optimization engine',
+    subtitle: 'Route attendees around congestion and queues before pressure peaks hit critical zones.',
+  },
+  operations: {
+    title: 'Operations control center',
+    subtitle: 'Coordinate interventions, monitor resilience, and respond to alerts with AI-supported precision.',
+  },
+  settings: {
+    title: 'System preferences and controls',
+    subtitle: 'Tune theme, data source expectations, and deployment behavior for demo or live operations.',
+  },
 };
-
-const zoneToLatLng = (zone: Zone) => ({
-  lat: STADIUM_CENTER.lat + (zone.row - 2) * 0.00045,
-  lng: STADIUM_CENTER.lng + (zone.col - 2) * 0.00058,
-});
 
 // Canvas-based heatmap visualization component
 interface HeatmapCanvasProps {
@@ -417,6 +401,7 @@ function App() {
   const mapMarkersRef = useRef<any[]>([]);
   const routeLineRef = useRef<any>(null);
   const hotspotCirclesRef = useRef<any[]>([]);
+  const popularLocationHighlightRef = useRef<any>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [journey, setJourney] = useState<JourneyPlan | null>(null);
@@ -440,15 +425,47 @@ function App() {
   const [destination, setDestination] = useState('seat-block');
   const [status, setStatus] = useState('Connecting to live crowd feed...');
   const [error, setError] = useState<string | null>(null);
+  const surfacedHighAlertRef = useRef<Set<string>>(new Set());
+  const [collapsedPanels, setCollapsedPanels] = useState({
+    organizer: true,
+    staff: true,
+    alerts: true,
+  });
   const [uiMode, setUiMode] = useState<UiMode>(() => {
     const stored = window.localStorage.getItem('flowsync-ui-mode');
     return stored === 'light' ? 'light' : 'dark';
   });
+  const [activePage, setActivePage] = useState<AppPage>(() => {
+    return getPageFromHash(window.location.hash);
+  });
+  const [selectedVenueId, setSelectedVenueId] = useState(() => getDefaultVenue().id);
+  const selectedVenue = getVenueById(selectedVenueId) ?? getDefaultVenue();
+  const venueZoneLabels = selectedVenue.zoneLabels;
+  const [selectedPopularLocationId, setSelectedPopularLocationId] = useState(() =>
+    getSmartPopularLocation('in-venue')?.id ?? POPULAR_LOCATIONS[0]?.id ?? '',
+  );
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', uiMode);
     window.localStorage.setItem('flowsync-ui-mode', uiMode);
   }, [uiMode]);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      setActivePage(getPageFromHash(window.location.hash));
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    handleHashChange();
+
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (window.location.hash.replace('#', '') !== activePage) {
+      window.history.replaceState(null, '', `#${activePage}`);
+    }
+  }, [activePage]);
 
   useEffect(() => {
     if (!GOOGLE_MAPS_API_KEY) {
@@ -510,7 +527,7 @@ function App() {
 
     const script = document.createElement('script');
     script.id = 'flowsync-google-maps';
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async&libraries=marker`;
     script.async = true;
     script.defer = true;
     script.onload = () => startPollingForMaps();
@@ -563,6 +580,49 @@ function App() {
   }, [phase]);
 
   useEffect(() => {
+    const mapVisible = isMapPage(activePage);
+
+    if (!mapVisible) {
+      mapMarkersRef.current.forEach((marker) => {
+        if (marker && 'map' in marker) {
+          marker.map = null;
+          return;
+        }
+        if (marker && typeof marker.setMap === 'function') {
+          marker.setMap(null);
+        }
+      });
+      mapMarkersRef.current = [];
+
+      hotspotCirclesRef.current.forEach((circle) => circle.setMap(null));
+      hotspotCirclesRef.current = [];
+
+      if (popularLocationHighlightRef.current) {
+        popularLocationHighlightRef.current.setMap(null);
+        popularLocationHighlightRef.current = null;
+      }
+
+      if (routeLineRef.current) {
+        routeLineRef.current.setMap(null);
+        routeLineRef.current = null;
+      }
+
+      mapInstanceRef.current = null;
+      return;
+    }
+
+    if (mapContainerRef.current && mapApiReady) {
+      setMapError(null);
+    }
+  }, [activePage, mapApiReady]);
+
+  useEffect(() => {
+    const mapVisible = isMapPage(activePage);
+
+    if (!mapVisible) {
+      return;
+    }
+
     if (!mapApiReady || !mapContainerRef.current) {
       return;
     }
@@ -575,7 +635,7 @@ function App() {
     if (!mapInstanceRef.current) {
       try {
         mapInstanceRef.current = new googleMaps.Map(mapContainerRef.current, {
-          center: STADIUM_CENTER,
+          center: selectedVenue.center,
           zoom: 16,
           mapTypeId: 'hybrid',
           streetViewControl: false,
@@ -586,7 +646,7 @@ function App() {
         setMapError('Google Maps initialization failed.');
       }
     }
-  }, [mapApiReady]);
+  }, [activePage, mapApiReady, selectedVenue.center]);
 
   useEffect(() => {
     let mounted = true;
@@ -686,6 +746,11 @@ function App() {
   const impactMinutes = comparison
     ? Math.max(0, comparison.before.longest_queue - comparison.after.longest_queue)
     : 3;
+  const activePageMeta = PAGE_ITEMS.find((item) => item.id === activePage) ?? PAGE_ITEMS[0];
+  const heroCopy = HERO_COPY[activePageMeta.id];
+  const smartPopularLocation = getSmartPopularLocation(phase) ?? POPULAR_LOCATIONS[0] ?? null;
+  const selectedPopularLocation = getPopularLocationById(selectedPopularLocationId) ?? smartPopularLocation;
+  const popularLocationsToShow = POPULAR_LOCATIONS.slice(0, 7);
 
   useEffect(() => {
     if (!mapApiReady || !mapInstanceRef.current || !heatmap.length) {
@@ -712,19 +777,42 @@ function App() {
       const isOnRoute = routePathSet.has(zone.zone_id);
       const pulseFactor = 1 + 0.14 * Math.sin(pulsePhase / 2 + zone.row + zone.col);
       const density = optimizeMode ? Math.max(5, zone.density_score - 18) : zone.density_score;
-      const marker = new googleMaps.Marker({
-        position: zoneToLatLng(zone),
-        map: mapInstanceRef.current,
-        title: `${zoneDisplayName(zone.zone_id)} • Density ${zone.density_score}%`,
-        icon: {
-          path: googleMaps.SymbolPath.CIRCLE,
-          fillColor: markerColorByDensity(density),
-          fillOpacity: optimizeMode ? 0.76 : 0.86,
-          strokeColor: isOnRoute ? '#57c7ff' : '#0b1220',
-          strokeWeight: isOnRoute ? 3 : 1,
-          scale: (isOnRoute ? 8 : 6) * pulseFactor,
-        },
-      });
+      const position = zoneToLatLng(zone, selectedVenue.center);
+      const title = `${zoneDisplayName(zone.zone_id, venueZoneLabels)} • Density ${zone.density_score}%`;
+      const advancedMarkerCtor = googleMaps.marker?.AdvancedMarkerElement;
+      const pinCtor = googleMaps.marker?.PinElement;
+
+      let marker: any;
+      if (advancedMarkerCtor && pinCtor) {
+        const pin = new pinCtor({
+          background: markerColorByDensity(density),
+          borderColor: isOnRoute ? '#57c7ff' : '#0b1220',
+          glyphColor: '#0b1220',
+          scale: (isOnRoute ? 1.22 : 1) * pulseFactor,
+        });
+
+        marker = new advancedMarkerCtor({
+          position,
+          map: mapInstanceRef.current,
+          title,
+          content: pin.element,
+        });
+      } else {
+        marker = new googleMaps.Marker({
+          position,
+          map: mapInstanceRef.current,
+          title,
+          icon: {
+            path: googleMaps.SymbolPath.CIRCLE,
+            fillColor: markerColorByDensity(density),
+            fillOpacity: optimizeMode ? 0.76 : 0.86,
+            strokeColor: isOnRoute ? '#57c7ff' : '#0b1220',
+            strokeWeight: isOnRoute ? 3 : 1,
+            scale: (isOnRoute ? 8 : 6) * pulseFactor,
+          },
+        });
+      }
+
       mapMarkersRef.current.push(marker);
     });
 
@@ -739,7 +827,7 @@ function App() {
         fillColor: idx === 0 ? '#ff2d55' : '#f59e0b',
         fillOpacity: 0.14 + Math.abs(Math.sin(pulsePhase / 8)) * 0.12,
         map: mapInstanceRef.current,
-        center: zoneToLatLng(zone),
+        center: zoneToLatLng(zone, selectedVenue.center),
         radius: 28 + zone.density_score * 0.9 + Math.abs(Math.sin(pulsePhase / 9)) * 16,
       });
       hotspotCirclesRef.current.push(circle);
@@ -753,7 +841,7 @@ function App() {
     const routeZones = routePath
       .map((zoneId) => heatmap.find((zone) => zone.zone_id === zoneId))
       .filter((zone): zone is Zone => Boolean(zone))
-      .map((zone) => zoneToLatLng(zone));
+      .map((zone) => zoneToLatLng(zone, selectedVenue.center));
 
     if (routeZones.length >= 2) {
       routeLineRef.current = new googleMaps.Polyline({
@@ -765,7 +853,55 @@ function App() {
       });
       routeLineRef.current.setMap(mapInstanceRef.current);
     }
-  }, [heatmap, mapApiReady, optimizeMode, pulsePhase, routePath, routePathSet, topZones]);
+  }, [heatmap, mapApiReady, optimizeMode, pulsePhase, routePath, routePathSet, selectedVenue.center, topZones, venueZoneLabels]);
+
+  useEffect(() => {
+    if (!isMapPage(activePage) || !mapApiReady || !mapInstanceRef.current || !selectedPopularLocation) {
+      return;
+    }
+
+    const googleMaps = (window as any).google?.maps;
+    if (!googleMaps) {
+      return;
+    }
+
+    if (popularLocationHighlightRef.current) {
+      popularLocationHighlightRef.current.setMap(null);
+      popularLocationHighlightRef.current = null;
+    }
+
+    const position = popularLocationToLatLng(selectedPopularLocation.id, selectedVenue.center);
+    popularLocationHighlightRef.current = new googleMaps.Circle({
+      strokeColor: '#7dd3fc',
+      strokeOpacity: 0.95,
+      strokeWeight: 3,
+      fillColor: '#7dd3fc',
+      fillOpacity: 0.2,
+      map: mapInstanceRef.current,
+      center: position,
+      radius: 48 + selectedPopularLocation.waitMinutes * 2,
+    });
+
+    return () => {
+      if (popularLocationHighlightRef.current) {
+        popularLocationHighlightRef.current.setMap(null);
+        popularLocationHighlightRef.current = null;
+      }
+    };
+  }, [activePage, mapApiReady, selectedPopularLocation, selectedVenue.center]);
+
+  useEffect(() => {
+    if (!mapApiReady || !mapInstanceRef.current) {
+      return;
+    }
+
+    const map = mapInstanceRef.current;
+    if (typeof map.setCenter === 'function') {
+      map.setCenter(selectedVenue.center);
+    } else {
+      map.center = selectedVenue.center;
+    }
+  }, [mapApiReady, selectedVenue.center]);
 
   useEffect(() => {
     const pulseTimer = window.setInterval(() => {
@@ -787,6 +923,24 @@ function App() {
     });
     setLastCriticalZone(focusZone.zone_id);
   }, [focusZone, lastCriticalZone]);
+
+  useEffect(() => {
+    const highAlerts = alerts.filter((item) => item.severity === 'high');
+
+    highAlerts.forEach((item) => {
+      const key = `${item.type}:${item.title}`;
+      if (surfacedHighAlertRef.current.has(key)) {
+        return;
+      }
+
+      surfacedHighAlertRef.current.add(key);
+      pushToast({
+        title: `🚨 ${item.title}`,
+        message: item.message,
+        severity: 'high',
+      });
+    });
+  }, [alerts]);
 
 
   const pushToast = (notice: Omit<ToastNotice, 'id'>) => {
@@ -873,13 +1027,26 @@ function App() {
         ))}
       </div>
 
+      <nav className="page-nav" aria-label="Application pages">
+        {PAGE_ITEMS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`page-nav-button ${activePage === item.id ? 'active' : ''}`}
+            onClick={() => setActivePage(item.id)}
+          >
+            <span>{item.label}</span>
+            <small>{item.description}</small>
+          </button>
+        ))}
+      </nav>
+
       <section className="hero">
         <div>
           <p className="eyebrow">FlowSync AI</p>
-          <h1>Real-time crowd intelligence for dense event environments.</h1>
+          <h1>{heroCopy.title}</h1>
           <p className="lede">
-            Narendra Modi Stadium digital twin: real map geometry with controlled simulated crowd behavior for
-            decisive operations during high-pressure moments.
+            {heroCopy.subtitle}
           </p>
         </div>
         <div className="hero-card">
@@ -894,6 +1061,21 @@ function App() {
                 : 'Data source: Simulated'}
             </span>
           </div>
+          <label className="venue-switch">
+            <span>Select Venue</span>
+            <select value={selectedVenueId} onChange={(event) => setSelectedVenueId(event.target.value as typeof selectedVenueId)}>
+              {VENUE_GROUPS.map((group) => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.options.map((venue) => (
+                    <option key={venue.value} value={venue.value} title={venue.description}>
+                      {venue.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <small className="venue-note">{selectedVenue.layoutMessage}</small>
           <div className="mode-switch" role="group" aria-label="UI mode switch">
             <button
               type="button"
@@ -942,31 +1124,135 @@ function App() {
         </div>
       </section>
 
+      {(activePage === 'overview' || activePage === 'live-map') ? (
+      <section className="panel popular-locations-panel">
+        <div className="panel-header">
+          <div>
+            <p className="panel-kicker">Popular Locations</p>
+            <h2>Food courts, gates, restrooms, seating, and parking</h2>
+          </div>
+          <span className="timestamp">
+            Best option: {smartPopularLocation ? `${smartPopularLocation.emoji} ${smartPopularLocation.name}` : 'Loading'}
+          </span>
+        </div>
+        <div className="popular-locations-summary">
+          <article className="popular-suggestion-card">
+            <span>Smart suggestion</span>
+            <strong>
+              {smartPopularLocation ? `${smartPopularLocation.emoji} ${smartPopularLocation.name}` : 'Best option pending'}
+            </strong>
+            <p>
+              {smartPopularLocation
+                ? `${smartPopularLocation.waitMinutes} min wait · ${smartPopularLocation.crowdHint}`
+                : 'Waiting for live data'}
+            </p>
+          </article>
+          <article className="popular-suggestion-card accent">
+            <span>Selected location</span>
+            <strong>
+              {selectedPopularLocation ? `${selectedPopularLocation.emoji} ${selectedPopularLocation.name}` : 'Select a location'}
+            </strong>
+            <p>
+              {selectedPopularLocation
+                ? `${selectedPopularLocation.crowdLabel.toUpperCase()} crowd · ${selectedPopularLocation.waitMinutes} min wait`
+                : 'Click a location to highlight it on the map.'}
+            </p>
+          </article>
+        </div>
+        <div className="popular-locations-grid">
+          {popularLocationsToShow.map((location) => (
+            <button
+              key={location.id}
+              type="button"
+              className={`popular-location-card ${selectedPopularLocation?.id === location.id ? 'active' : ''}`}
+              onClick={() => setSelectedPopularLocationId(location.id)}
+              title={`Highlight ${location.name} on the map`}
+            >
+              <span className="popular-location-emoji">{location.emoji}</span>
+              <strong>{location.name}</strong>
+              <small>
+                {location.waitMinutes} min wait · {location.crowdLabel} crowd
+              </small>
+            </button>
+          ))}
+        </div>
+      </section>
+      ) : null}
+
+      {activePage === 'settings' ? (
+        <section className="panel settings-panel">
+          <div className="panel-header">
+            <div>
+              <p className="panel-kicker">Preferences</p>
+              <h2>Page and theme controls</h2>
+            </div>
+            <span className="timestamp">Current page: {activePageMeta.label}</span>
+          </div>
+          <div className="settings-grid">
+            <article className="settings-card">
+              <strong>Theme</strong>
+              <p>Switch between command mode and day mode for operational or presentation use.</p>
+              <div className="mode-switch" role="group" aria-label="UI mode switch">
+                <button
+                  type="button"
+                  className={`mode-button ${uiMode === 'dark' ? 'active' : ''}`}
+                  onClick={() => setUiMode('dark')}
+                >
+                  Command mode
+                </button>
+                <button
+                  type="button"
+                  className={`mode-button ${uiMode === 'light' ? 'active' : ''}`}
+                  onClick={() => setUiMode('light')}
+                >
+                  Day mode
+                </button>
+              </div>
+            </article>
+            <article className="settings-card">
+              <strong>Data source</strong>
+              <p>{dataSource?.source === 'live' ? 'Live telemetry is active.' : 'Simulation mode is active.'}</p>
+              <small>{dataSource?.generated_at ?? 'Waiting for backend data'}</small>
+            </article>
+            <article className="settings-card">
+              <strong>Backend</strong>
+              <p>{API_BASE}</p>
+              <small>{GOOGLE_MAPS_API_KEY ? 'Maps API key configured' : 'Maps API key missing'}</small>
+            </article>
+          </div>
+        </section>
+      ) : null}
+
+      {(activePage === 'overview' || activePage === 'journey' || activePage === 'operations') ? (
       <section className="focus-panel">
         <article className="focus-card">
           <span className="focus-label">Current problem</span>
           <strong className="focus-value">
-            {focusZone ? `${zoneDisplayName(focusZone.zone_id)} congestion (${focusZone.density_score}%)` : 'Waiting for zone data'}
+            {focusZone ? `${zoneDisplayName(focusZone.zone_id, venueZoneLabels)} congestion (${focusZone.density_score}%)` : 'Waiting for zone data'}
           </strong>
         </article>
         <article className="focus-card">
           <span className="focus-label">AI action</span>
-          <strong className="focus-value">Redirecting to {LOCATION_LABELS[journey?.recommended_anchor ?? ''] ?? 'South Gate Corridor'}</strong>
+          <strong className="focus-value">
+            AI is actively redirecting traffic to {LOCATION_LABELS[journey?.recommended_anchor ?? ''] ?? 'South Gate Corridor'} to prevent overload.
+          </strong>
         </article>
         <article className="focus-card impact">
           <span className="focus-label">Impact</span>
           <strong className="focus-value">Wait time reduced by {impactMinutes} mins</strong>
         </article>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'live-map') ? (
       <section className="panel stadium-panel">
         <div className="panel-header">
           <div>
             <p className="panel-kicker">Real Venue Layer</p>
-            <h2>Narendra Modi Stadium, Ahmedabad</h2>
+            <h2>{selectedVenue.name}</h2>
           </div>
           <span className="timestamp">
-            Real map + {dataSource?.source === 'live' ? 'live telemetry' : 'simulated crowd events'}
+            {selectedVenue.layoutMessage} • {dataSource?.source === 'live' ? 'live telemetry' : 'simulated crowd events'}
           </span>
         </div>
         <div className="stadium-map-shell">
@@ -977,13 +1263,15 @@ function App() {
           {showRebalance ? <div className="rebalance-overlay">Rebalancing traffic...</div> : null}
         </div>
         <div className="zone-meaning-strip">
-          <span className="zone-chip">Zone 1 → Gate A</span>
-          <span className="zone-chip">Zone 2 → Food Court North</span>
-          <span className="zone-chip">Zone 3 → West Stand</span>
-          <span className="zone-chip">Zone 4 → Parking A</span>
+          <span className="zone-chip">Zone 1 → {venueZoneLabels['zone-1'] ?? 'Zone 1'}</span>
+          <span className="zone-chip">Zone 2 → {venueZoneLabels['zone-2'] ?? 'Zone 2'}</span>
+          <span className="zone-chip">Zone 3 → {venueZoneLabels['zone-3'] ?? 'Zone 3'}</span>
+          <span className="zone-chip">Zone 4 → {venueZoneLabels['zone-4'] ?? 'Zone 4'}</span>
         </div>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'live-map') ? (
       <section className="dashboard-grid">
         <article className={`panel heatmap-panel ${isRefreshing ? 'panel-loading' : ''}`}>
           <div className="panel-header">
@@ -1029,7 +1317,9 @@ function App() {
           {error ? <p className="error-banner">{error}</p> : null}
         </article>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'journey') ? (
       <section className="panel control-panel">
         <div className="panel-header">
           <div>
@@ -1076,11 +1366,13 @@ function App() {
           </div>
         </div>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'journey') ? (
       <section className="decision-strip">
         <article className="decision-card emphasis">
           <span>🧠 Predicted congestion in 2 mins</span>
-          <strong>Predicted congestion in {REAL_ZONE_LABELS[predictedZone] ?? 'Gate B'} in 2 mins</strong>
+          <strong>Predicted congestion in {venueZoneLabels[predictedZone] ?? 'Gate B'} in 2 mins</strong>
           <p>Model forecasts pressure build-up here next. Rerouting is pre-emptive.</p>
         </article>
         <article className="decision-card compare">
@@ -1098,7 +1390,9 @@ function App() {
           <p>Operationally safest immediate diversion from congested route.</p>
         </article>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'journey' || activePage === 'operations') ? (
       <section className="dashboard-grid">
         <aside className="stack">
           <article className="panel journey-panel">
@@ -1126,7 +1420,7 @@ function App() {
               {routePath.length ? (
                 routePath.map((zoneId) => (
                   <span key={zoneId} className="route-chip">
-                    {REAL_ZONE_LABELS[zoneId] ?? zoneId}
+                    {venueZoneLabels[zoneId] ?? zoneId}
                   </span>
                 ))
               ) : (
@@ -1173,7 +1467,9 @@ function App() {
           </article>
         </aside>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'live-map') ? (
       <section className="panel venue-panel subdued-panel">
         <div className="panel-header">
           <div>
@@ -1236,7 +1532,9 @@ function App() {
           )) ?? null}
         </div>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'operations') ? (
       <section className="panel organizer-panel">
         <div className="panel-header">
           <div>
@@ -1244,7 +1542,23 @@ function App() {
             <h2>Operational summary</h2>
           </div>
           <span className="timestamp">{organizerSummary?.generated_at ?? 'Awaiting live data'}</span>
+          {activePage === 'overview' ? (
+            <button
+              type="button"
+              className="panel-collapse-toggle"
+              onClick={() =>
+                setCollapsedPanels((prev) => ({
+                  ...prev,
+                  organizer: !prev.organizer,
+                }))
+              }
+            >
+              {collapsedPanels.organizer ? 'Expand' : 'Collapse'}
+            </button>
+          ) : null}
         </div>
+        {activePage === 'overview' && collapsedPanels.organizer ? null : (
+        <>
         <div className="organizer-grid">
           <div className="organizer-stat">
             <span>Average density</span>
@@ -1282,8 +1596,12 @@ function App() {
             </div>
           </div>
         </div>
+        </>
+        )}
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'operations') ? (
       <section className="panel staff-panel subdued-panel">
         <div className="panel-header">
           <div>
@@ -1291,7 +1609,22 @@ function App() {
             <h2>Recommended actions</h2>
           </div>
           <span className="timestamp">{staffPlan?.generated_at ?? 'Awaiting live data'}</span>
+          {activePage === 'overview' ? (
+            <button
+              type="button"
+              className="panel-collapse-toggle"
+              onClick={() =>
+                setCollapsedPanels((prev) => ({
+                  ...prev,
+                  staff: !prev.staff,
+                }))
+              }
+            >
+              {collapsedPanels.staff ? 'Expand' : 'Collapse'}
+            </button>
+          ) : null}
         </div>
+        {activePage === 'overview' && collapsedPanels.staff ? null : (
         <div className="staff-list">
           {staffPlan?.actions.map((action) => (
             <article key={`${action.area}-${action.instruction}`} className={`staff-card ${action.priority}`}>
@@ -1302,8 +1635,11 @@ function App() {
             </article>
           )) ?? null}
         </div>
+        )}
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'operations') ? (
       <section className="panel resilience-panel subdued-panel">
         <div className="panel-header">
           <div>
@@ -1331,14 +1667,31 @@ function App() {
           </div>
         </div>
       </section>
+      ) : null}
 
+      {(activePage === 'overview' || activePage === 'operations') ? (
       <section className="panel alerts-panel subdued-panel">
         <div className="panel-header">
           <div>
             <p className="panel-kicker">Alerts System</p>
             <h2>Operational notifications</h2>
           </div>
+          {activePage === 'overview' ? (
+            <button
+              type="button"
+              className="panel-collapse-toggle"
+              onClick={() =>
+                setCollapsedPanels((prev) => ({
+                  ...prev,
+                  alerts: !prev.alerts,
+                }))
+              }
+            >
+              {collapsedPanels.alerts ? 'Expand' : 'Collapse'}
+            </button>
+          ) : null}
         </div>
+        {activePage === 'overview' && collapsedPanels.alerts ? null : (
         <div className="alerts-grid">
           {alerts.map((alert) => (
             <article key={`${alert.type}-${alert.title}`} className={`alert-card ${alert.severity}`}>
@@ -1348,7 +1701,9 @@ function App() {
             </article>
           ))}
         </div>
+        )}
       </section>
+      ) : null}
     </main>
   );
 }
