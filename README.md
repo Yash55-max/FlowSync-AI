@@ -113,11 +113,11 @@ Tested using **Narendra Modi Stadium (Ahmedabad)** layout:
 
 ## ⚙️ System Architecture
 Frontend (React)
-↓
+      ↓
 Backend API (FastAPI)
-↓
+      ↓
 Crowd Simulator / Live Data Ingestion
-↓
+      ↓
 Routing + Prediction Engine
 
 
