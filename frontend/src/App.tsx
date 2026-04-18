@@ -157,6 +157,11 @@ type OrganizerSummary = {
   high_density_zone_count: number;
 };
 
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const PHASE_OPTIONS: Array<{ label: string; value: EventPhase }> = [
@@ -425,6 +430,8 @@ function App() {
   const [destination, setDestination] = useState('seat-block');
   const [status, setStatus] = useState('Connecting to live crowd feed...');
   const [error, setError] = useState<string | null>(null);
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
   const surfacedHighAlertRef = useRef<Set<string>>(new Set());
   const [collapsedPanels, setCollapsedPanels] = useState({
     organizer: true,
@@ -466,6 +473,37 @@ function App() {
       window.history.replaceState(null, '', `#${activePage}`);
     }
   }, [activePage]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(display-mode: standalone)');
+
+    const refreshInstalledState = () => {
+      const standaloneNavigator = (window.navigator as Navigator & { standalone?: boolean }).standalone;
+      setIsInstalled(media.matches || standaloneNavigator === true);
+    };
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      const installEvent = event as BeforeInstallPromptEvent;
+      installEvent.preventDefault();
+      setDeferredInstallPrompt(installEvent);
+    };
+
+    const handleAppInstalled = () => {
+      setDeferredInstallPrompt(null);
+      setIsInstalled(true);
+    };
+
+    refreshInstalledState();
+    media.addEventListener('change', refreshInstalledState);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      media.removeEventListener('change', refreshInstalledState);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
 
   useEffect(() => {
     if (!GOOGLE_MAPS_API_KEY) {
@@ -1016,6 +1054,16 @@ function App() {
     }
   };
 
+  const handleInstallApp = async () => {
+    if (!deferredInstallPrompt) {
+      return;
+    }
+
+    await deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    setDeferredInstallPrompt(null);
+  };
+
   return (
     <main className="app-shell">
       <div className="toast-stack">
@@ -1076,6 +1124,11 @@ function App() {
             </select>
           </label>
           <small className="venue-note">{selectedVenue.layoutMessage}</small>
+          {!isInstalled && deferredInstallPrompt ? (
+            <button type="button" className="install-app-button" onClick={handleInstallApp}>
+              Install App
+            </button>
+          ) : null}
           <div className="mode-switch" role="group" aria-label="UI mode switch">
             <button
               type="button"
