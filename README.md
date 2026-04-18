@@ -72,6 +72,24 @@ Tested using **Narendra Modi Stadium (Ahmedabad)** layout:
 
 ---
 
+## 📍 Supported Locations
+
+### 🏟 Stadiums
+- Narendra Modi Stadium  
+- Wembley Stadium  
+- MetLife Stadium  
+- Melbourne Cricket Ground  
+- Camp Nou  
+
+### 🗺 Places / Landmarks
+- Times Square  
+- Burj Khalifa  
+- Eiffel Tower  
+- Tirupati Temple  
+- Kumbh Mela Grounds  
+
+---
+
 ## 🧱 Tech Stack
 
 | Layer | Tech |
