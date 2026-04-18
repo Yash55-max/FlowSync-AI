@@ -226,6 +226,14 @@ select {
   background: linear-gradient(135deg, rgba(49, 119, 232, 0.34), rgba(22, 177, 227, 0.28));
 }
 
+.install-app-hint {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
 .mode-button {
   border: 1px solid transparent;
   border-radius: 999px;

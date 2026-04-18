@@ -164,6 +164,7 @@ type BeforeInstallPromptEvent = Event & {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
+const GOOGLE_MAPS_MAP_ID = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID?.trim() ?? '';
 const PHASE_OPTIONS: Array<{ label: string; value: EventPhase }> = [
   { label: 'Arrival', value: 'arrival' },
   { label: 'In Venue', value: 'in-venue' },
@@ -565,7 +566,8 @@ function App() {
 
     const script = document.createElement('script');
     script.id = 'flowsync-google-maps';
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async&libraries=marker`;
+    const markerLibraryParam = GOOGLE_MAPS_MAP_ID ? '&libraries=marker' : '';
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async${markerLibraryParam}`;
     script.async = true;
     script.defer = true;
     script.onload = () => startPollingForMaps();
@@ -678,6 +680,7 @@ function App() {
           mapTypeId: 'hybrid',
           streetViewControl: false,
           fullscreenControl: false,
+          ...(GOOGLE_MAPS_MAP_ID ? { mapId: GOOGLE_MAPS_MAP_ID } : {}),
         });
       } catch {
         setMapApiReady(false);
@@ -819,9 +822,10 @@ function App() {
       const title = `${zoneDisplayName(zone.zone_id, venueZoneLabels)} • Density ${zone.density_score}%`;
       const advancedMarkerCtor = googleMaps.marker?.AdvancedMarkerElement;
       const pinCtor = googleMaps.marker?.PinElement;
+      const canUseAdvancedMarkers = Boolean(GOOGLE_MAPS_MAP_ID) && advancedMarkerCtor && pinCtor;
 
       let marker: any;
-      if (advancedMarkerCtor && pinCtor) {
+      if (canUseAdvancedMarkers) {
         const pin = new pinCtor({
           background: markerColorByDensity(density),
           borderColor: isOnRoute ? '#57c7ff' : '#0b1220',
@@ -1055,12 +1059,32 @@ function App() {
   };
 
   const handleInstallApp = async () => {
+    if (isInstalled) {
+      pushToast({
+        title: 'App already installed',
+        message: 'FlowSync AI is already installed on this device.',
+        severity: 'low',
+      });
+      return;
+    }
+
     if (!deferredInstallPrompt) {
+      const isChromiumLike = /Chrome|Chromium|Edg/.test(window.navigator.userAgent);
+      pushToast({
+        title: 'Install from browser menu',
+        message: isChromiumLike
+          ? 'Open your browser menu and choose Install App. If this is a dev session, refresh once after load.'
+          : 'Open your browser share/menu and choose Add to Home Screen (browser-dependent).',
+        severity: 'medium',
+      });
       return;
     }
 
     await deferredInstallPrompt.prompt();
-    await deferredInstallPrompt.userChoice;
+    const choice = await deferredInstallPrompt.userChoice;
+    if (choice.outcome === 'accepted') {
+      setIsInstalled(true);
+    }
     setDeferredInstallPrompt(null);
   };
 
@@ -1124,10 +1148,17 @@ function App() {
             </select>
           </label>
           <small className="venue-note">{selectedVenue.layoutMessage}</small>
-          {!isInstalled && deferredInstallPrompt ? (
-            <button type="button" className="install-app-button" onClick={handleInstallApp}>
-              Install App
-            </button>
+          {!isInstalled ? (
+            <>
+              <button type="button" className="install-app-button" onClick={handleInstallApp}>
+                {deferredInstallPrompt ? 'Install App' : 'Install App Guide'}
+              </button>
+              <small className="install-app-hint">
+                {deferredInstallPrompt
+                  ? 'Install FlowSync AI for fullscreen, app-like experience.'
+                  : 'If install prompt is unavailable, use your browser menu to install.'}
+              </small>
+            </>
           ) : null}
           <div className="mode-switch" role="group" aria-label="UI mode switch">
             <button

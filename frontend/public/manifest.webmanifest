@@ -1,15 +1,26 @@
 {
+  "id": "/",
   "name": "FlowSync AI",
   "short_name": "FlowSync",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "description": "Real-time crowd intelligence dashboard for event operations.",
   "background_color": "#08111f",
   "theme_color": "#08111f",
+  "lang": "en",
   "icons": [
     {
       "src": "/favicon.svg",
-      "sizes": "64x64",
-      "type": "image/svg+xml"
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
     }
   ]
 }
