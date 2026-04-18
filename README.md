@@ -113,25 +113,42 @@ Routing + Prediction Engine
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
-Frontend
+```
+
+### Frontend
+
+```bash
 cd frontend
 npm install
 npm run dev
-Access
-Frontend → http://localhost:5173
-Backend Docs → http://localhost:8000/docs
-🔌 API Highlights
-Endpoint	Description
-/snapshot	Current crowd + queue state
-/heatmap	Zone density map
-/journey	Smart route planning
-/venue-map	Venue structure
-/staff-actions	AI operator suggestions
-/alerts	Real-time alerts
-/demo-control	Trigger simulation scenarios
-/ingest/live-snapshot	Push real telemetry
-/data-source	Live vs simulated data status
-📡 Live Data Ingestion Example
+```
+
+### Access
+
+- Frontend → http://localhost:5173
+- Backend Docs → http://localhost:8000/docs
+
+---
+
+## 🔌 API Highlights
+
+| Endpoint | Description |
+|----------|-------------|
+| `/snapshot` | Current crowd + queue state |
+| `/heatmap` | Zone density map |
+| `/journey` | Smart route planning |
+| `/venue-map` | Venue structure |
+| `/staff-actions` | AI operator suggestions |
+| `/alerts` | Real-time alerts |
+| `/demo-control` | Trigger simulation scenarios |
+| `/ingest/live-snapshot` | Push real telemetry |
+| `/data-source` | Live vs simulated data status |
+
+---
+
+## 📡 Live Data Ingestion Example
+
+```json
 {
   "generated_at": "2026-04-15T12:30:00Z",
   "zones": [
@@ -141,24 +158,39 @@ Endpoint	Description
     { "stall_id": "stall-1", "wait_time_minutes": 12 }
   ]
 }
-🧪 Demo Scenarios
+```
 
-Trigger:
+---
 
-surge-zone-1
-food-rush
-emergency-mode
-optimize-crowd
-🏆 Why This Project Stands Out
-Real-world venue simulation (not dummy/demo-only data)
-AI-driven routing and prediction logic
-Full-stack deployment on Google Cloud Run
-Covers both attendee experience + operator decision-making
-Designed to scale with real telemetry (IoT, CCTV, WiFi tracking)
-⚠️ Important Notes
-API keys (Google Maps) are restricted by domain
-Backend CORS is configured for deployed frontend
-System works in simulated mode by default if no live data is ingested
-🔒 License
+## 🧪 Demo Scenarios
+
+Trigger via `/demo-control`:
+
+- `surge-zone-1`
+- `food-rush`
+- `emergency-mode`
+- `optimize-crowd`
+
+---
+
+## 🏆 Why This Project Stands Out
+
+- Real-world venue simulation (not dummy/demo-only data)
+- AI-driven routing and prediction logic
+- Full-stack deployment on Google Cloud Run
+- Covers both attendee experience + operator decision-making
+- Designed to scale with real telemetry (IoT, CCTV, WiFi tracking)
+
+---
+
+## ⚠️ Important Notes
+
+- API keys (Google Maps) are restricted by domain
+- Backend CORS is configured for deployed frontend
+- System works in simulated mode by default if no live data is ingested
+
+---
+
+## 🔒 License
 
 MIT License
