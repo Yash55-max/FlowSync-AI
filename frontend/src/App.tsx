@@ -157,6 +157,51 @@ type OrganizerSummary = {
   high_density_zone_count: number;
 };
 
+type MapPoint = { lat: number; lng: number };
+
+type MapOverlayHandle = {
+  setMap?: (map: unknown) => void;
+  map?: unknown;
+};
+
+type MapInstanceHandle = {
+  setCenter?: (center: MapPoint) => void;
+  center?: MapPoint;
+};
+
+type GoogleMapsMarkerApi = {
+  AdvancedMarkerElement?: new (options: {
+    position: MapPoint;
+    map: unknown;
+    title: string;
+    content: Element;
+  }) => MapOverlayHandle;
+  PinElement?: new (options: {
+    background: string;
+    borderColor: string;
+    glyphColor: string;
+    scale: number;
+  }) => { element: Element };
+};
+
+type GoogleMapsApi = {
+  Map?: new (container: HTMLDivElement, options: Record<string, unknown>) => MapInstanceHandle;
+  Circle?: new (options: Record<string, unknown>) => MapOverlayHandle;
+  Polyline?: new (options: Record<string, unknown>) => MapOverlayHandle;
+  marker?: GoogleMapsMarkerApi;
+};
+
+type WindowWithGoogleMaps = Window & {
+  google?: { maps?: GoogleMapsApi };
+  gm_authFailure?: () => void;
+  webkitAudioContext?: typeof AudioContext;
+};
+
+const getGoogleMapsApi = (): GoogleMapsApi | null => {
+  const maps = (window as WindowWithGoogleMaps).google?.maps;
+  return maps ?? null;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const GOOGLE_MAPS_MAP_ID = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID?.trim() ?? '';
@@ -178,11 +223,11 @@ const LOCATION_OPTIONS = [
   { label: 'Exit Plaza', value: 'exit-a' },
 ];
 
-const DEMO_CONTROLS: Array<{ label: string; action: DemoScenario; tone: 'low' | 'medium' | 'high' }> = [
-  { label: '🔥 Surge Zone 1', action: 'surge-zone-1', tone: 'medium' },
-  { label: '🍔 Food Rush', action: 'food-rush', tone: 'medium' },
-  { label: '🚨 Emergency Mode', action: 'emergency-mode', tone: 'high' },
-  { label: '✨ Optimize Crowd', action: 'optimize-crowd', tone: 'low' },
+const DEMO_CONTROLS: Array<{ label: string; action: DemoScenario }> = [
+  { label: '🔥 Surge Zone 1', action: 'surge-zone-1' },
+  { label: '🍔 Food Rush', action: 'food-rush' },
+  { label: '🚨 Emergency Mode', action: 'emergency-mode' },
+  { label: '✨ Optimize Crowd', action: 'optimize-crowd' },
 ];
 
 const LOCATION_LABELS: Record<string, string> = {
@@ -396,11 +441,11 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({
 
 function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const mapInstanceRef = useRef<any>(null);
-  const mapMarkersRef = useRef<any[]>([]);
-  const routeLineRef = useRef<any>(null);
-  const hotspotCirclesRef = useRef<any[]>([]);
-  const popularLocationHighlightRef = useRef<any>(null);
+  const mapInstanceRef = useRef<MapInstanceHandle | null>(null);
+  const mapMarkersRef = useRef<MapOverlayHandle[]>([]);
+  const routeLineRef = useRef<MapOverlayHandle | null>(null);
+  const hotspotCirclesRef = useRef<MapOverlayHandle[]>([]);
+  const popularLocationHighlightRef = useRef<MapOverlayHandle | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [journey, setJourney] = useState<JourneyPlan | null>(null);
@@ -514,7 +559,7 @@ function App() {
       }, 120);
     };
 
-    (window as any).gm_authFailure = () => {
+    (window as WindowWithGoogleMaps).gm_authFailure = () => {
       if (!mounted) {
         return;
       }
@@ -543,8 +588,7 @@ function App() {
 
     const script = document.createElement('script');
     script.id = 'flowsync-google-maps';
-    const markerLibraryParam = GOOGLE_MAPS_MAP_ID ? '&libraries=marker' : '';
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async${markerLibraryParam}`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&v=weekly&loading=async&libraries=marker`;
     script.async = true;
     script.defer = true;
     script.onload = () => startPollingForMaps();
@@ -611,16 +655,24 @@ function App() {
       });
       mapMarkersRef.current = [];
 
-      hotspotCirclesRef.current.forEach((circle) => circle.setMap(null));
+      hotspotCirclesRef.current.forEach((circle) => {
+        if (typeof circle.setMap === 'function') {
+          circle.setMap(null);
+        }
+      });
       hotspotCirclesRef.current = [];
 
       if (popularLocationHighlightRef.current) {
-        popularLocationHighlightRef.current.setMap(null);
+        if (typeof popularLocationHighlightRef.current.setMap === 'function') {
+          popularLocationHighlightRef.current.setMap(null);
+        }
         popularLocationHighlightRef.current = null;
       }
 
       if (routeLineRef.current) {
-        routeLineRef.current.setMap(null);
+        if (typeof routeLineRef.current.setMap === 'function') {
+          routeLineRef.current.setMap(null);
+        }
         routeLineRef.current = null;
       }
 
@@ -644,7 +696,7 @@ function App() {
       return;
     }
 
-    const googleMaps = (window as any).google?.maps;
+    const googleMaps = getGoogleMapsApi();
     if (!googleMaps || typeof googleMaps.Map !== 'function') {
       return;
     }
@@ -768,10 +820,16 @@ function App() {
   const heatIndex = venueMap?.gates.length
     ? Math.round(venueMap.gates.reduce((sum, gate) => sum + gate.density_score, 0) / venueMap.gates.length)
     : averageDensity;
-  const topZones = [...heatmap].sort((left, right) => right.density_score - left.density_score).slice(0, 3);
-  const shortestQueue = [...liveQueues].sort((left, right) => left.wait_time_minutes - right.wait_time_minutes)[0] ?? null;
+  const topZones = useMemo(
+    () => [...heatmap].sort((left, right) => right.density_score - left.density_score).slice(0, 3),
+    [heatmap],
+  );
+  const shortestQueue = useMemo(
+    () => [...liveQueues].sort((left, right) => left.wait_time_minutes - right.wait_time_minutes)[0] ?? null,
+    [liveQueues],
+  );
   const routePath = journey?.route.path ?? [];
-  const routePathSet = new Set(routePath);
+  const routePathSet = useMemo(() => new Set(routePath), [routePath]);
   const focusZone = topZones[0] ?? null;
   const predictedZone = topZones[1]?.zone_id ?? 'zone-7';
   const optimizeMode = comparison?.mode === 'optimize-crowd';
@@ -782,17 +840,19 @@ function App() {
   const heroCopy = HERO_COPY[activePageMeta.id];
   const smartPopularLocation = getSmartPopularLocation(phase) ?? POPULAR_LOCATIONS[0] ?? null;
   const selectedPopularLocation = getPopularLocationById(selectedPopularLocationId) ?? smartPopularLocation;
-  const popularLocationsToShow = POPULAR_LOCATIONS.slice(0, 7);
+  const popularLocationsToShow = useMemo(() => POPULAR_LOCATIONS.slice(0, 7), []);
 
   useEffect(() => {
     if (!mapApiReady || !mapInstanceRef.current || !heatmap.length) {
       return;
     }
 
-    const googleMaps = (window as any).google?.maps;
-    if (!googleMaps) {
+    const googleMaps = getGoogleMapsApi();
+    if (!googleMaps || typeof googleMaps.Circle !== 'function' || typeof googleMaps.Polyline !== 'function') {
       return;
     }
+    const CircleCtor = googleMaps.Circle;
+    const PolylineCtor = googleMaps.Polyline;
 
     mapMarkersRef.current.forEach((marker) => {
       if (marker && 'map' in marker) {
@@ -813,9 +873,12 @@ function App() {
       const title = `${zoneDisplayName(zone.zone_id, venueZoneLabels)} • Density ${zone.density_score}%`;
       const advancedMarkerCtor = googleMaps.marker?.AdvancedMarkerElement;
       const pinCtor = googleMaps.marker?.PinElement;
-      const canUseAdvancedMarkers = Boolean(GOOGLE_MAPS_MAP_ID) && advancedMarkerCtor && pinCtor;
+      const canUseAdvancedMarkers = Boolean(advancedMarkerCtor && pinCtor);
 
       if (canUseAdvancedMarkers) {
+        if (!advancedMarkerCtor || !pinCtor) {
+          return;
+        }
         const pin = new pinCtor({
           background: markerColorByDensity(density),
           borderColor: isOnRoute ? '#57c7ff' : '#0b1220',
@@ -832,7 +895,7 @@ function App() {
 
         mapMarkersRef.current.push(marker);
       } else {
-        const marker = new googleMaps.Circle({
+        const marker = new CircleCtor({
           strokeColor: isOnRoute ? '#57c7ff' : '#0b1220',
           strokeOpacity: 0.65,
           strokeWeight: isOnRoute ? 2 : 1,
@@ -847,11 +910,15 @@ function App() {
       }
     });
 
-    hotspotCirclesRef.current.forEach((circle) => circle.setMap(null));
+    hotspotCirclesRef.current.forEach((circle) => {
+      if (typeof circle.setMap === 'function') {
+        circle.setMap(null);
+      }
+    });
     hotspotCirclesRef.current = [];
 
     topZones.slice(0, 2).forEach((zone, idx) => {
-      const circle = new googleMaps.Circle({
+      const circle = new CircleCtor({
         strokeColor: idx === 0 ? '#ff2d55' : '#f59e0b',
         strokeOpacity: 0.8,
         strokeWeight: idx === 0 ? 3 : 2,
@@ -865,7 +932,9 @@ function App() {
     });
 
     if (routeLineRef.current) {
-      routeLineRef.current.setMap(null);
+      if (typeof routeLineRef.current.setMap === 'function') {
+        routeLineRef.current.setMap(null);
+      }
       routeLineRef.current = null;
     }
 
@@ -875,14 +944,16 @@ function App() {
       .map((zone) => zoneToLatLng(zone, selectedVenue.center));
 
     if (routeZones.length >= 2) {
-      routeLineRef.current = new googleMaps.Polyline({
+      routeLineRef.current = new PolylineCtor({
         path: routeZones,
         geodesic: false,
         strokeColor: '#57c7ff',
         strokeOpacity: 0.9,
         strokeWeight: 4,
       });
-      routeLineRef.current.setMap(mapInstanceRef.current);
+      if (typeof routeLineRef.current.setMap === 'function') {
+        routeLineRef.current.setMap(mapInstanceRef.current);
+      }
     }
   }, [heatmap, mapApiReady, optimizeMode, pulsePhase, routePath, routePathSet, selectedVenue.center, topZones, venueZoneLabels]);
 
@@ -891,18 +962,21 @@ function App() {
       return;
     }
 
-    const googleMaps = (window as any).google?.maps;
-    if (!googleMaps) {
+    const googleMaps = getGoogleMapsApi();
+    if (!googleMaps || typeof googleMaps.Circle !== 'function') {
       return;
     }
+    const CircleCtor = googleMaps.Circle;
 
     if (popularLocationHighlightRef.current) {
-      popularLocationHighlightRef.current.setMap(null);
+      if (typeof popularLocationHighlightRef.current.setMap === 'function') {
+        popularLocationHighlightRef.current.setMap(null);
+      }
       popularLocationHighlightRef.current = null;
     }
 
     const position = popularLocationToLatLng(selectedPopularLocation.id, selectedVenue.center);
-    popularLocationHighlightRef.current = new googleMaps.Circle({
+    popularLocationHighlightRef.current = new CircleCtor({
       strokeColor: '#7dd3fc',
       strokeOpacity: 0.95,
       strokeWeight: 3,
@@ -915,7 +989,9 @@ function App() {
 
     return () => {
       if (popularLocationHighlightRef.current) {
-        popularLocationHighlightRef.current.setMap(null);
+        if (typeof popularLocationHighlightRef.current.setMap === 'function') {
+          popularLocationHighlightRef.current.setMap(null);
+        }
         popularLocationHighlightRef.current = null;
       }
     };
@@ -1023,7 +1099,11 @@ function App() {
       // Play sound for emergency mode
       if (action === 'emergency-mode') {
         try {
-          const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+          const AudioContextCtor = window.AudioContext || (window as WindowWithGoogleMaps).webkitAudioContext;
+          if (!AudioContextCtor) {
+            return;
+          }
+          const audioContext = new AudioContextCtor();
           const oscillator = audioContext.createOscillator();
           const gain = audioContext.createGain();
           oscillator.type = 'triangle';
@@ -1047,7 +1127,7 @@ function App() {
     }
   };
 
-  const handleInstallApp = async () => {
+  const handleInstallApp = () => {
     if (isInstalled) {
       pushToast({
         title: 'App already installed',

@@ -15,6 +15,11 @@ class ApiBehaviorTests(unittest.TestCase):
         self.assertEqual(response.headers.get("x-content-type-options"), "nosniff")
         self.assertEqual(response.headers.get("x-frame-options"), "DENY")
         self.assertEqual(response.headers.get("cache-control"), "no-store")
+        self.assertEqual(response.headers.get("cross-origin-opener-policy"), "same-origin")
+        self.assertEqual(response.headers.get("cross-origin-resource-policy"), "same-origin")
+        self.assertEqual(response.headers.get("x-permitted-cross-domain-policies"), "none")
+        self.assertEqual(response.headers.get("permissions-policy"), "geolocation=(), camera=(), microphone=()")
+        self.assertEqual(response.headers.get("referrer-policy"), "strict-origin-when-cross-origin")
 
     def test_route_rejects_invalid_locations(self) -> None:
         with TestClient(app) as client:
@@ -103,6 +108,12 @@ class ApiBehaviorTests(unittest.TestCase):
         status_payload = status_response.json()
         self.assertEqual(status_payload["source"], "live")
         self.assertEqual(status_payload["stale"], False)
+
+    def test_rejects_untrusted_host_header(self) -> None:
+        with TestClient(app) as client:
+            response = client.get("/health", headers={"host": "evil.example"})
+
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":
