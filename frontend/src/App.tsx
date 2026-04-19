@@ -157,11 +157,6 @@ type OrganizerSummary = {
   high_density_zone_count: number;
 };
 
-type BeforeInstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
-};
-
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
 const GOOGLE_MAPS_MAP_ID = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID?.trim() ?? '';
@@ -287,12 +282,8 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({
     ctx.fillStyle = 'rgba(8, 17, 31, 0.8)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Create a density map
-    const densityMap: Map<string, number> = new Map();
-    zones.forEach(zone => {
-      const key = `${zone.row}-${zone.col}`;
-      densityMap.set(key, zone.density_score);
-    });
+    const zoneByCoord = new Map(zones.map((zone) => [`${zone.row}-${zone.col}`, zone]));
+    const hotspotIds = new Set(topZones.map((zone) => zone.zone_id));
 
     const routeIndex = new Map(routePath.map((zoneId, index) => [zoneId, index + 1]));
 
@@ -302,7 +293,8 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({
         const x = col * cellWidth;
         const y = row * cellHeight;
         const key = `${row}-${col}`;
-        const rawDensity = densityMap.get(key) || 0;
+        const zone = zoneByCoord.get(key);
+        const rawDensity = zone?.density_score ?? 0;
         const density = optimizeMode ? Math.max(8, rawDensity - 18) : rawDensity;
 
         // Draw cell background
@@ -317,7 +309,6 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({
         ctx.strokeRect(x, y, cellWidth, cellHeight);
 
         // Highlight route path with visible blue glow + sequence number.
-        const zone = zones.find(z => z.row === row && z.col === col);
         if (zone && routePathSet.has(zone.zone_id)) {
           ctx.shadowColor = 'rgba(87, 199, 255, 0.9)';
           ctx.shadowBlur = 12;
@@ -341,7 +332,7 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({
         }
 
         // Highlight top zones (hotspots) with pulsing effect
-        if (zone && topZones.some(tz => tz.zone_id === zone.zone_id)) {
+        if (zone && hotspotIds.has(zone.zone_id)) {
           ctx.strokeStyle = '#ff6b6b';
           ctx.lineWidth = 2;
           ctx.setLineDash([4, 4]);
@@ -397,6 +388,8 @@ const HeatmapCanvas: React.FC<HeatmapCanvasProps> = ({
       width={640}
       height={320}
       className="heatmap-canvas"
+      role="img"
+      aria-label="Live crowd density heatmap with route and hotspot highlights"
     />
   );
 };
@@ -431,7 +424,6 @@ function App() {
   const [destination, setDestination] = useState('seat-block');
   const [status, setStatus] = useState('Connecting to live crowd feed...');
   const [error, setError] = useState<string | null>(null);
-  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const surfacedHighAlertRef = useRef<Set<string>>(new Set());
   const [collapsedPanels, setCollapsedPanels] = useState({
@@ -483,26 +475,11 @@ function App() {
       setIsInstalled(media.matches || standaloneNavigator === true);
     };
 
-    const handleBeforeInstallPrompt = (event: Event) => {
-      const installEvent = event as BeforeInstallPromptEvent;
-      installEvent.preventDefault();
-      setDeferredInstallPrompt(installEvent);
-    };
-
-    const handleAppInstalled = () => {
-      setDeferredInstallPrompt(null);
-      setIsInstalled(true);
-    };
-
     refreshInstalledState();
     media.addEventListener('change', refreshInstalledState);
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
 
     return () => {
       media.removeEventListener('change', refreshInstalledState);
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
     };
   }, []);
 
@@ -691,22 +668,32 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
+
+    const fetchWithTimeout = async (url: string, timeoutMs = 6000) => {
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { signal: controller.signal });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+    };
 
     const load = async () => {
       try {
         setIsRefreshing(true);
         const [snapshotResponse, alertsResponse, journeyResponse, venueMapResponse, staffResponse, organizerResponse, resilienceResponse, dataSourceResponse] =
           await Promise.all([
-          fetch(`${API_BASE}/snapshot`),
-          fetch(`${API_BASE}/alerts`),
-          fetch(
+          fetchWithTimeout(`${API_BASE}/snapshot`),
+          fetchWithTimeout(`${API_BASE}/alerts`),
+          fetchWithTimeout(
             `${API_BASE}/journey?phase=${encodeURIComponent(phase)}&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}`,
           ),
-          fetch(`${API_BASE}/venue-map?phase=${encodeURIComponent(phase)}`),
-          fetch(`${API_BASE}/staff-actions?phase=${encodeURIComponent(phase)}`),
-          fetch(`${API_BASE}/organizer-summary`),
-          fetch(`${API_BASE}/resilience`),
-          fetch(`${API_BASE}/data-source`),
+          fetchWithTimeout(`${API_BASE}/venue-map?phase=${encodeURIComponent(phase)}`),
+          fetchWithTimeout(`${API_BASE}/staff-actions?phase=${encodeURIComponent(phase)}`),
+          fetchWithTimeout(`${API_BASE}/organizer-summary`),
+          fetchWithTimeout(`${API_BASE}/resilience`),
+          fetchWithTimeout(`${API_BASE}/data-source`),
         ]);
 
         if (
@@ -753,6 +740,9 @@ function App() {
         if (!mounted) {
           return;
         }
+        if (loadError instanceof DOMException && loadError.name === 'AbortError') {
+          return;
+        }
         setError(loadError instanceof Error ? loadError.message : 'Unable to reach the backend');
         setStatus('Waiting for API connection');
         setIsRefreshing(false);
@@ -764,6 +754,7 @@ function App() {
 
     return () => {
       mounted = false;
+      controller.abort();
       window.clearInterval(interval);
     };
   }, [destination, origin, phase, refreshKey]);
@@ -824,7 +815,6 @@ function App() {
       const pinCtor = googleMaps.marker?.PinElement;
       const canUseAdvancedMarkers = Boolean(GOOGLE_MAPS_MAP_ID) && advancedMarkerCtor && pinCtor;
 
-      let marker: any;
       if (canUseAdvancedMarkers) {
         const pin = new pinCtor({
           background: markerColorByDensity(density),
@@ -833,29 +823,28 @@ function App() {
           scale: (isOnRoute ? 1.22 : 1) * pulseFactor,
         });
 
-        marker = new advancedMarkerCtor({
+        const marker = new advancedMarkerCtor({
           position,
           map: mapInstanceRef.current,
           title,
           content: pin.element,
         });
-      } else {
-        marker = new googleMaps.Marker({
-          position,
-          map: mapInstanceRef.current,
-          title,
-          icon: {
-            path: googleMaps.SymbolPath.CIRCLE,
-            fillColor: markerColorByDensity(density),
-            fillOpacity: optimizeMode ? 0.76 : 0.86,
-            strokeColor: isOnRoute ? '#57c7ff' : '#0b1220',
-            strokeWeight: isOnRoute ? 3 : 1,
-            scale: (isOnRoute ? 8 : 6) * pulseFactor,
-          },
-        });
-      }
 
-      mapMarkersRef.current.push(marker);
+        mapMarkersRef.current.push(marker);
+      } else {
+        const marker = new googleMaps.Circle({
+          strokeColor: isOnRoute ? '#57c7ff' : '#0b1220',
+          strokeOpacity: 0.65,
+          strokeWeight: isOnRoute ? 2 : 1,
+          fillColor: markerColorByDensity(density),
+          fillOpacity: optimizeMode ? 0.78 : 0.88,
+          map: mapInstanceRef.current,
+          center: position,
+          radius: 10 + pulseFactor * (isOnRoute ? 9 : 6),
+        });
+
+        mapMarkersRef.current.push(marker);
+      }
     });
 
     hotspotCirclesRef.current.forEach((circle) => circle.setMap(null));
@@ -1068,31 +1057,21 @@ function App() {
       return;
     }
 
-    if (!deferredInstallPrompt) {
-      const isChromiumLike = /Chrome|Chromium|Edg/.test(window.navigator.userAgent);
-      pushToast({
-        title: 'Install from browser menu',
-        message: isChromiumLike
-          ? 'Open your browser menu and choose Install App. If this is a dev session, refresh once after load.'
-          : 'Open your browser share/menu and choose Add to Home Screen (browser-dependent).',
-        severity: 'medium',
-      });
-      return;
-    }
-
-    await deferredInstallPrompt.prompt();
-    const choice = await deferredInstallPrompt.userChoice;
-    if (choice.outcome === 'accepted') {
-      setIsInstalled(true);
-    }
-    setDeferredInstallPrompt(null);
+    const isChromiumLike = /Chrome|Chromium|Edg/.test(window.navigator.userAgent);
+    pushToast({
+      title: 'Install from browser menu',
+      message: isChromiumLike
+        ? 'Open your browser menu and choose Install App. In development, the native install banner may be unavailable.'
+        : 'Open your browser share/menu and choose Add to Home Screen (browser-dependent).',
+      severity: 'medium',
+    });
   };
 
   return (
     <main className="app-shell">
-      <div className="toast-stack">
+      <div className="toast-stack" aria-live="polite" aria-atomic="true">
         {toasts.map((toast) => (
-          <article key={toast.id} className={`toast ${toast.severity}`}>
+          <article key={toast.id} className={`toast ${toast.severity}`} role={toast.severity === 'high' ? 'alert' : 'status'}>
             <strong>{toast.title}</strong>
             <span>{toast.message}</span>
           </article>
@@ -1106,6 +1085,7 @@ function App() {
             type="button"
             className={`page-nav-button ${activePage === item.id ? 'active' : ''}`}
             onClick={() => setActivePage(item.id)}
+            aria-current={activePage === item.id ? 'page' : undefined}
           >
             <span>{item.label}</span>
             <small>{item.description}</small>
@@ -1151,12 +1131,10 @@ function App() {
           {!isInstalled ? (
             <>
               <button type="button" className="install-app-button" onClick={handleInstallApp}>
-                {deferredInstallPrompt ? 'Install App' : 'Install App Guide'}
+                Install App Guide
               </button>
               <small className="install-app-hint">
-                {deferredInstallPrompt
-                  ? 'Install FlowSync AI for fullscreen, app-like experience.'
-                  : 'If install prompt is unavailable, use your browser menu to install.'}
+                Use your browser menu to install FlowSync AI as an app.
               </small>
             </>
           ) : null}
@@ -1165,6 +1143,7 @@ function App() {
               type="button"
               className={`mode-button ${uiMode === 'dark' ? 'active' : ''}`}
               onClick={() => setUiMode('dark')}
+              aria-pressed={uiMode === 'dark'}
             >
               Command mode
             </button>
@@ -1172,6 +1151,7 @@ function App() {
               type="button"
               className={`mode-button ${uiMode === 'light' ? 'active' : ''}`}
               onClick={() => setUiMode('light')}
+              aria-pressed={uiMode === 'light'}
             >
               Day mode
             </button>
@@ -1198,8 +1178,10 @@ function App() {
             {DEMO_CONTROLS.map((control) => (
               <button
                 key={control.action}
+                type="button"
                 onClick={() => triggerDemoControl(control.action)}
                 title={`Trigger ${control.label}`}
+                aria-label={`Trigger scenario ${control.action}`}
               >
                 {control.label}
               </button>
@@ -1251,6 +1233,7 @@ function App() {
               className={`popular-location-card ${selectedPopularLocation?.id === location.id ? 'active' : ''}`}
               onClick={() => setSelectedPopularLocationId(location.id)}
               title={`Highlight ${location.name} on the map`}
+              aria-pressed={selectedPopularLocation?.id === location.id}
             >
               <span className="popular-location-emoji">{location.emoji}</span>
               <strong>{location.name}</strong>
@@ -1281,6 +1264,7 @@ function App() {
                   type="button"
                   className={`mode-button ${uiMode === 'dark' ? 'active' : ''}`}
                   onClick={() => setUiMode('dark')}
+                  aria-pressed={uiMode === 'dark'}
                 >
                   Command mode
                 </button>
@@ -1288,6 +1272,7 @@ function App() {
                   type="button"
                   className={`mode-button ${uiMode === 'light' ? 'active' : ''}`}
                   onClick={() => setUiMode('light')}
+                  aria-pressed={uiMode === 'light'}
                 >
                   Day mode
                 </button>
@@ -1340,9 +1325,16 @@ function App() {
           </span>
         </div>
         <div className="stadium-map-shell">
-          <div ref={mapContainerRef} className="stadium-map" />
+          <div
+            ref={mapContainerRef}
+            className="stadium-map"
+            role="img"
+            aria-label={`Interactive map for ${selectedVenue.name} with live crowd overlays`}
+          />
           {!mapApiReady || mapError ? (
-            <div className="map-overlay">{mapError ?? 'Map API loading. Heat simulation and routing are still active.'}</div>
+            <div className="map-overlay" role="status" aria-live="polite">
+              {mapError ?? 'Map API loading. Heat simulation and routing are still active.'}
+            </div>
           ) : null}
           {showRebalance ? <div className="rebalance-overlay">Rebalancing traffic...</div> : null}
         </div>
@@ -1636,6 +1628,7 @@ function App() {
                   organizer: !prev.organizer,
                 }))
               }
+              aria-expanded={!collapsedPanels.organizer}
             >
               {collapsedPanels.organizer ? 'Expand' : 'Collapse'}
             </button>
@@ -1703,6 +1696,7 @@ function App() {
                   staff: !prev.staff,
                 }))
               }
+              aria-expanded={!collapsedPanels.staff}
             >
               {collapsedPanels.staff ? 'Expand' : 'Collapse'}
             </button>
@@ -1770,6 +1764,7 @@ function App() {
                   alerts: !prev.alerts,
                 }))
               }
+              aria-expanded={!collapsedPanels.alerts}
             >
               {collapsedPanels.alerts ? 'Expand' : 'Collapse'}
             </button>
