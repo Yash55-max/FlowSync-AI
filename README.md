@@ -204,7 +204,7 @@ Trigger via `/demo-control`:
 ## ⚠️ Important Notes
 
 - API keys (Google Maps) are restricted by domain
-- Backend CORS is configured for deployed frontend
+- Backend CORS is configured for the deployed frontend
 - System works in simulated mode by default if no live data is ingested
 
 ---
